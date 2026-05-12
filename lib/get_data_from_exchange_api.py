@@ -56,12 +56,23 @@ def resolve_cfbenchmarks_url(series_or_ticker: str) -> str:
         ) from e
 
 
-def _http_get(url: str, timeout_s: float = 30.0) -> str:
+def _http_get(url: str, timeout_s: float | None = None) -> str:
+    """
+    Fetch URL body as text.
+
+    ``timeout_s`` is optional. When omitted, no per-request timeout is passed to
+    ``urlopen`` (socket default, usually unlimited), which avoids spurious
+    ``TimeoutError`` on slow CF Benchmarks HTML responses while still using a
+    fresh HTTP request for each call.
+    """
     req = urllib.request.Request(
         url,
         headers={"User-Agent": _DEFAULT_USER_AGENT, "Accept": "text/html,application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+    open_kw: dict[str, Any] = {}
+    if timeout_s is not None:
+        open_kw["timeout"] = timeout_s
+    with urllib.request.urlopen(req, **open_kw) as resp:
         return resp.read().decode("utf-8", "replace")
 
 

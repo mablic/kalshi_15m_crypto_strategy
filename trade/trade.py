@@ -15,22 +15,15 @@ from strategy import *
 from client import *
 from lib import *
 from generate_ticker import GENERATE_TICKER
-from order_book import ORDER_MANAGER, ORDER
-from lib.trade_log import (
-    append_trade_log,
-    dec2,
-    format_log_api,
-    format_log_datetime,
-    format_log_market,
-    format_log_separator,
-)
+from order_book import ORDER_BOOK_MANAGER, TICKER_ORDER_BOOK, ORDER
+from lib.trade_log import dec2, error, info, log, log_market, log_sep
 
 ENTRY_TIME = 3
-ENTRY_PRICE = 0.15
-EXIT_PRICE = 0.5
+ENTRY_PRICE = 0.3
+EXIT_PRICE = 0.7
 ENTRY_DISTANCE = 300
 STOP_TIME = 1
-THRESHOLD = 0.31
+THRESHOLD = 0.42
 TRADE_SIDE = "yes"
 TRADE_LOT = 1
 WAIT_TIME = 30
@@ -39,11 +32,11 @@ class TRADE:
     def __init__(self, series_list: list[str], client: KalshiHttpClient):
         self.series_list = series_list
         self.ticker_data = {}
-        self.strategy = CRYPTO_STRATEGY_MANAGER()
         self.trade_lot = TRADE_LOT
         self.client = client
-        self.in_trade_tickers = {}
-        self.order_book_managers = {}
+        self.strategy = CRYPTO_STRATEGY_MANAGER()
+        self.order_book_managers = ORDER_BOOK_MANAGER()
+        self._last_fill_time = int(datetime.now().timestamp())
 
     def _get_ticker_list(self):
         generate_ticker = GENERATE_TICKER(series_list=self.series_list)
@@ -97,7 +90,7 @@ class TRADE:
 
     def _set_strategy(self):
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_TIME(entry_time=ENTRY_TIME))
-        self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_PRICE(entry_price=ENTRY_PRICE))
+        # self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_PRICE(entry_price=ENTRY_PRICE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_EXIT_PRICE(exit_price=EXIT_PRICE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_DISTANCE(entry_distance=ENTRY_DISTANCE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_STOP_TIME(stop_time=STOP_TIME))
@@ -106,6 +99,37 @@ class TRADE:
         self.strategy.set_minimum_entry_price(ENTRY_PRICE)
         self.strategy.set_maximum_exit_price(EXIT_PRICE)
 
+    def get_filled_orders_from_api(self, ticker: str):
+        try:
+            filled_orders = self.client.get_fills(min_ts=self._last_fill_time)['fills']
+            self._last_fill_time = int(datetime.now().timestamp())
+            result = []
+            for f in filled_orders:
+                if f['ticker'] == ticker:
+                    filled_order = ORDER(
+                        order_id=f.get('order_id'),
+                        ticker=f.get('ticker'),
+                        symbol=f.get('ticker'),
+                        order_date=f.get('created_time'),
+                        order_type='fill',
+                        order_execution_type=None,
+                        action=f.get('action'),
+                        side=f.get('side'),
+                        quantity=f.get('count_fp'),
+                        remaining_quantity=f.get('count_fp'),
+                        entry_price=f.get('yes_price_dollars') if f.get('side') == 'yes' else f.get('no_price_dollars'),
+                        expected_exit_price=EXIT_PRICE,
+                        price=f.get('yes_price_dollars') if f.get('side') == 'yes' else f.get('no_price_dollars'),
+                        created_at=f.get('created_time'),
+                        last_updated_at=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
+                        trade_type='crypto',
+                        fill_id=f.get('fill_id'),
+                    )
+                    result.append(filled_order)
+            return result
+        except Exception as e:
+            error("Error getting filled orders from API:", e)
+        return None
 
     def get_position_from_api(self, ticker: str):
         try:
@@ -114,7 +138,7 @@ class TRADE:
                 if p['ticker'] == ticker:
                     return p
         except Exception as e:
-            append_trade_log(format_log_api(format_log_datetime(), "ERROR", f"Error getting position from API: {e}"))
+            error("Error getting position from API:", e)
         return None
 
     def get_current_market_data_from_api(
@@ -126,17 +150,11 @@ class TRADE:
 
         try:
             market_data = self.client.get_market_ticker(ticker=ticker)['market']
-            market_order_book = self.client.get_market_ticker_order_book(ticker=ticker)['orderbook_fp']
-            yes_bid_orders = [float(x[0]) for x in market_order_book['yes_dollars']]
-            no_bid_orders = [float(x[0]) for x in market_order_book['no_dollars']]
-            yes_ask_orders = [1 - x for x in no_bid_orders]
-            no_ask_orders = [1 - x for x in yes_bid_orders]
-
-            # Empty side → no min/max; use bounds so strategy doesn't crash (wide book).
-            yes_ask_low = min(min(yes_ask_orders), 0.99) if yes_ask_orders else 0.99
-            yes_bid_high = max(max(yes_bid_orders), 0.01) if yes_bid_orders else 0.01
-            no_ask_low = min(min(no_ask_orders), 0.99) if no_ask_orders else 0.99
-            no_bid_high = max(max(no_bid_orders), 0.01) if no_bid_orders else 0.01
+            order_book = self.get_order_book_by_ticker(ticker)
+            yes_ask_low = order_book['yes_ask_low_dollar']
+            yes_bid_high = order_book['yes_bid_high_dollar']
+            no_ask_low = order_book['no_ask_low_dollar']
+            no_bid_high = order_book['no_bid_high_dollar']
 
             chi = ZoneInfo("America/Chicago")
             if snapshot_bar_time is not None:
@@ -203,6 +221,139 @@ class TRADE:
                 # Rebuild from fresh CF OHLC + latest order book; avoids stale tail stuck after bad concat/join.
                 self.ticker_data[series] = merged_df
 
+    def get_open_order_by_ticker(self, ticker: str):
+        try:
+            result = []
+            orders = self.client.get_open_orders()['orders']
+            for o in orders:
+                if o['ticker'] == ticker:
+                    open_order = ORDER(
+                        order_id=o.get('order_id'),
+                        ticker=o.get('ticker'),
+                        symbol=o.get('ticker'),
+                        order_date=o.get('created_time'),
+                        order_type='order',
+                        order_execution_type=None,
+                        action=o.get('action'),
+                        side=o.get('side'),
+                        quantity=o.get('initial_count_fp'),
+                        remaining_quantity=o.get('remaining_count_fp'),
+                        entry_price=o.get('yes_price_dollars') if o.get('side') == 'yes' else o.get('no_price_dollars'),
+                        expected_exit_price=EXIT_PRICE,
+                        price=o.get('yes_price_dollars') if o.get('side') == 'yes' else o.get('no_price_dollars'),
+                        created_at=o.get('created_time'),
+                        last_updated_at=o.get('last_update_time'),
+                        trade_type='crypto',
+                        fill_id=None,
+                    )
+                    result.append(open_order)
+            return result
+        except Exception as e:
+            error("Error getting order by ticker from API:", e)
+        return None
+
+    def get_order_book_by_ticker(self, ticker: str):
+        try:
+            market_order_book = self.client.get_market_ticker_order_book(ticker=ticker)['orderbook_fp']
+            yes_bid_orders = [float(x[0]) for x in market_order_book['yes_dollars']]
+            no_bid_orders = [float(x[0]) for x in market_order_book['no_dollars']]
+            yes_ask_orders = [1 - x for x in no_bid_orders]
+            no_ask_orders = [1 - x for x in yes_bid_orders]
+
+            # Empty side → no min/max; use bounds so strategy doesn't crash (wide book).
+            yes_ask_low = min(min(yes_ask_orders), 0.99) if yes_ask_orders else 0.99
+            yes_bid_high = max(max(yes_bid_orders), 0.01) if yes_bid_orders else 0.01
+            no_ask_low = min(min(no_ask_orders), 0.99) if no_ask_orders else 0.99
+            no_bid_high = max(max(no_bid_orders), 0.01) if no_bid_orders else 0.01
+
+            return {
+                'yes_ask_low_dollar': yes_ask_low,
+                'yes_bid_high_dollar': yes_bid_high,
+                'no_ask_low_dollar': no_ask_low,
+                'no_bid_high_dollar': no_bid_high,
+            }
+        except Exception as e:
+            error("Error getting order book by ticker from API:", e)
+        return None
+
+    def get_trade_decision_by_ticker(self, ticker: str, row: pd.Series):
+        try:
+            trade_time = row.index
+            chi = ZoneInfo("America/Chicago")
+            clock_min = datetime.now(tz=chi).replace(second=0, microsecond=0)
+            mod = clock_min.minute % 15
+            entry_time = 15 if mod == 0 else 15 - mod
+            distance = round(
+                float(0.0 if row["close"] is None else float(row["close"]))
+                - float(0.0 if row["floor_strike"] is None else float(row["floor_strike"])),
+                2,
+            )
+            parameters = {
+                'ma3': row['ma3'],
+                'ma5': row['ma5'],
+                'ma3_vs_strike': row['ma3_vs_strike'],
+                'ma5_vs_strike': row['ma5_vs_strike'],
+                'yes_dist_pct': row['yes_dist_pct'],
+                '1m_yes_dist_momentum': row['1m_yes_dist_momentum'],
+                '3m_yes_dist_momentum': row['3m_yes_dist_momentum'],
+                '5m_yes_dist_momentum': row['5m_yes_dist_momentum'],
+                'time_decay': entry_time,
+                'log_return': row['log_return'],
+                '3m_log_return': row['3m_log_return'],
+                '5m_log_return': row['5m_log_return'],
+                'yes_dist': row['yes_dist'],
+            }
+
+            # yes_ask_price, no_ask_price, yes_bid_price, no_bid_price = self.get_price_from_order_book(row)
+            yes_ask_price = row['yes_ask_low_dollar']
+            no_ask_price = row['no_ask_low_dollar']
+            yes_bid_price = row['yes_bid_high_dollar']
+            no_bid_price = row['no_bid_high_dollar']
+            trade_side = None
+            entry_price = None
+            exit_price = None
+            if self.strategy.get_trade_side() is None:
+                entry_price = min(yes_ask_price, no_ask_price)
+                exit_price = max(yes_bid_price, no_bid_price)
+            else:
+                if self.strategy.get_trade_side() == 'yes':
+                    entry_price = yes_ask_price
+                    exit_price = yes_bid_price
+                else:
+                    entry_price = no_ask_price
+                    exit_price = no_bid_price
+            log_sep()
+            log_market(
+                clock_min,
+                ticker,
+                entry_time,
+                yes_ask_price,
+                yes_bid_price,
+                no_ask_price,
+                no_bid_price,
+                distance,
+            )
+            if self.strategy.get_trade_side() is None:
+                if yes_ask_price < no_ask_price:
+                    trade_side = 'yes'
+                else:
+                    trade_side = 'no'
+            else:
+                trade_side = self.strategy.get_trade_side()
+            self.set_strategy_ctx(MarketContext(entry_time=entry_time, stop_time=entry_time, entry_price=entry_price, 
+                exit_price=exit_price, distance=distance, trade_side=trade_side, trade_lot=self.trade_lot, 
+                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters))
+            self.strategy.run_all_strategies(ctx=self.ctx)
+            trade_decision = self.strategy.get_trade_decision()
+            return trade_decision
+        except Exception as e:
+            error("Error getting trade decision by ticker:", e)
+        return None 
+
+    def _update_open_order_book(self, ticker: str, open_order: dict, open_filled_orders: list):
+        """Sync local order book with API (placeholder)."""
+        pass
+
     def run(self):
         self._set_strategy()
         self.initialize_dataframes()
@@ -210,101 +361,18 @@ class TRADE:
             self.read_new_data()
             for series_ticker in self.ticker_data.keys():
                 last_df = self.ticker_data[series_ticker].tail(1)
-                row = last_df.iloc[0]
-                trade_time = last_df.index[0]   
-                ticker = row['ticker']            
-                if series_ticker in self.in_trade_tickers:
-                    in_trade = self.in_trade_tickers[series_ticker]
-                    if ticker not in in_trade:
-                        if series_ticker in self.order_book_managers:
-                            self.order_book_managers[series_ticker].reset_in_trade()
-                            append_trade_log(format_log_api(format_log_datetime(), "INFO", f"Reset in trade for {series_ticker}"))
-                        else:
-                            self.order_book_managers[series_ticker] = ORDER_MANAGER()
-                            append_trade_log(format_log_api(format_log_datetime(), "INFO", f"Created order book manager for {series_ticker}"))
-                
-                if last_df.empty:
-                    continue
-                if self.strategy.is_trade_completed():
-                    break
-
-                # Minutes to next :00/:15/:30/:45 — use wall clock, not the OHLC bar index.
-                # tail(1) is the last *surviving* row after dropna; its timestamp can move
-                # backward between polls, which makes "time decay" look like 14→13→14.
-                chi = ZoneInfo("America/Chicago")
-                clock_min = datetime.now(tz=chi).replace(second=0, microsecond=0)
-                mod = clock_min.minute % 15
-                entry_time = 0 if mod == 0 else 15 - mod
-                distance = round(
-                    float(0.0 if row["close"] is None else float(row["close"]))
-                    - float(0.0 if row["floor_strike"] is None else float(row["floor_strike"])),
-                    2,
-                )
-                parameters = {
-                    'ma3': row['ma3'],
-                    'ma5': row['ma5'],
-                    'ma3_vs_strike': row['ma3_vs_strike'],
-                    'ma5_vs_strike': row['ma5_vs_strike'],
-                    'yes_dist_pct': row['yes_dist_pct'],
-                    '1m_yes_dist_momentum': row['1m_yes_dist_momentum'],
-                    '3m_yes_dist_momentum': row['3m_yes_dist_momentum'],
-                    '5m_yes_dist_momentum': row['5m_yes_dist_momentum'],
-                    'time_decay': entry_time,
-                    'log_return': row['log_return'],
-                    '3m_log_return': row['3m_log_return'],
-                    '5m_log_return': row['5m_log_return'],
-                    'yes_dist': row['yes_dist'],
-                }
-
-                # yes_ask_price, no_ask_price, yes_bid_price, no_bid_price = self.get_price_from_order_book(row)
-                yes_ask_price = row['yes_ask_low_dollar']
-                no_ask_price = row['no_ask_low_dollar']
-                yes_bid_price = row['yes_bid_high_dollar']
-                no_bid_price = row['no_bid_high_dollar']
-                trade_side = None
-                entry_price = None
-                exit_price = None
-                if self.strategy.get_trade_side() is None:
-                    entry_price = min(yes_ask_price, no_ask_price)
-                    exit_price = max(yes_bid_price, no_bid_price)
-                else:
-                    if self.strategy.get_trade_side() == 'yes':
-                        entry_price = yes_ask_price
-                        exit_price = yes_bid_price
-                    else:
-                        entry_price = no_ask_price
-                        exit_price = no_bid_price
-                append_trade_log(format_log_separator())
-                append_trade_log(
-                    format_log_market(
-                        format_log_datetime(clock_min),
-                        ticker,
-                        entry_time,
-                        yes_ask_price,
-                        yes_bid_price,
-                        no_ask_price,
-                        no_bid_price,
-                        distance,
-                    )
-                )
-                if self.strategy.get_trade_side() is None:
-                    if yes_ask_price < no_ask_price:
-                        trade_side = 'yes'
-                    else:
-                        trade_side = 'no'
-                else:
-                    trade_side = self.strategy.get_trade_side()
-                self.set_strategy_ctx(MarketContext(entry_time=entry_time, stop_time=entry_time, entry_price=entry_price, 
-                    exit_price=exit_price, distance=distance, trade_side=trade_side, trade_lot=self.trade_lot, 
-                    current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters))
-                self.strategy.run_all_strategies(ctx=self.ctx)
-                trade_decision = self.strategy.get_trade_decision()
-                ts = format_log_datetime()
-                if trade_decision == 'buy':
-                    if self.order_book_managers.get(series_ticker) is None:
-                        append_trade_log(format_log_api(format_log_datetime(), "INFO", f"Created order book manager for {series_ticker}"))
-                        self.order_book_managers[series_ticker] = ORDER_MANAGER()
-                    order = ORDER(
+                row = last_df.iloc[0]  
+                ticker = row['ticker'] 
+                open_order = self.get_open_order_by_ticker(ticker)
+                open_filled_orders = self.get_filled_orders_from_api(ticker)
+                # if nothing is open, create or filled
+                if not self.order_book_managers.check_ticker_in_order_book_manager(ticker):
+                    self.order_book_managers.add_order_book_manager(TICKER_ORDER_BOOK(ticker))
+                trade_decision = self.get_trade_decision_by_ticker(ticker, row)
+                # trade_decision = 'buy'
+                order_book = self.get_order_book_by_ticker(ticker)
+                if trade_decision == 'buy' and not open_order and not self.order_book_managers.get_order_book_manager(ticker).is_in_trade():
+                    buy_order = ORDER(
                         order_id=None,
                         ticker=ticker,
                         symbol=ticker,
@@ -315,58 +383,44 @@ class TRADE:
                         side='yes',
                         quantity=self.trade_lot,
                         remaining_quantity=self.trade_lot,
-                        entry_price=entry_price,
-                        expected_exit_price=exit_price,
-                        price=entry_price,
+                        entry_price=min(order_book['yes_ask_low_dollar'], ENTRY_PRICE) ,
+                        expected_exit_price=EXIT_PRICE,
+                        price=ENTRY_PRICE,
                         created_at=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
                         last_updated_at=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
                         trade_type='buy',
+                        fill_id=None,
                     )
-                    self.order_book_managers[series_ticker].add_to_buy_orders(order)
-                    self.client.create_open_order(
-                        ticker=ticker, 
-                        side='yes', 
-                        action='buy',
-                        count=self.trade_lot,
-                        type='limit',
-                        yes_price_dollars=dec2(entry_price),
-                    ) 
-                    append_trade_log(
-                        format_log_api(
-                            ts,
-                            "PLACE",
-                            f"place_order ticker={ticker} kalshi_side=yes px={dec2(entry_price)} "
-                            f"qty={dec2(self.trade_lot)} intent=buy market_side={trade_side}",
-                        )
-                    )
-                position = self.get_position_from_api(ticker)
-                if position is not None:
-                    order = self.order_book_managers[series_ticker].get_order_by_ticker(ticker)
-                    if not self.order_book_managers[series_ticker].check_sell_orders(ticker):
+                    self.order_book_managers.get_order_book_manager(ticker).add_to_buy_orders(buy_order)
+                else:
+                    self.order_book_managers.get_order_book_manager(ticker).order_decision(open_order, open_filled_orders)
+                to_be_trade_list = self.order_book_managers.get_order_book_manager(ticker).get_to_be_trade_list()
+                for to_be_trade_order in to_be_trade_list:
+                    if to_be_trade_order.action == 'buy':
+                        log("PLACE_BUY", to_be_trade_order.ticker, to_be_trade_order.side, "n=", to_be_trade_order.remaining_quantity, "yes$=", dec2(to_be_trade_order.entry_price), category="TRADE")
                         self.client.create_open_order(
-                            ticker=order['ticker'], 
-                            side='yes', 
-                            action='sell',
-                            count=self.trade_lot,
-                            type='limit',
-                            yes_price_dollars=dec2(order['expected_exit_price']),
+                            ticker=to_be_trade_order.ticker,
+                            side=to_be_trade_order.side,
+                            action=to_be_trade_order.action,
+                            count=to_be_trade_order.remaining_quantity,
+                            yes_price_dollars=to_be_trade_order.entry_price,
                         )
-                        self.order_book_managers[series_ticker].add_to_sell_orders(order)
-                        append_trade_log(
-                            format_log_api(
-                                ts,
-                                "POSITION",
-                                f"position ticker={ticker} kalshi_side=yes px={dec2(position['price'])} "
-                                f"qty={dec2(position['quantity'])}",
-                            )
+                    else:
+                        if trade_decision == 'stop':
+                            ypx = max(order_book['yes_bid_high_dollar'], 0.01)
+                        else:
+                            ypx = max(order_book['yes_bid_high_dollar'], to_be_trade_order.entry_price, 0.01) 
+                        log("PLACE_SELL", to_be_trade_order.ticker, to_be_trade_order.side, "n=", to_be_trade_order.remaining_quantity, "yes$=", dec2(ypx), "cancel_id=", to_be_trade_order.order_id, category="TRADE")
+                        if to_be_trade_order.order_id is not None:
+                            self.client.cancel_open_order(order_id=to_be_trade_order.order_id)
+                        self.client.create_open_order(
+                            ticker=to_be_trade_order.ticker,
+                            side=to_be_trade_order.side,
+                            action=to_be_trade_order.action,
+                            count=to_be_trade_order.remaining_quantity,
+                            yes_price_dollars=ypx,
                         )
-                    elif trade_decision == 'stop':
-                        self.client.close_open_position_order(
-                            ticker=ticker,
-                            side='yes',
-                            count=int(self.trade_lot),
-                        )
-                        self.order_book_managers[series_ticker].remove_from_sell_orders(order)
+                    self.order_book_managers.get_order_book_manager(ticker).clear_to_be_trade_list()
             time.sleep(WAIT_TIME)
 
 if __name__ == "__main__":
@@ -403,5 +457,6 @@ if __name__ == "__main__":
         private_key=private_key,
         environment=env,
     )
+    info("TRADE start env=", env, "series=BTC15M", "wait_s=", WAIT_TIME)
     trade = TRADE(series_list=["BTC15M"], client=client)  
     trade.run()

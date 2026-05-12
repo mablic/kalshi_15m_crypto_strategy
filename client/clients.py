@@ -38,13 +38,6 @@ class KalshiBaseClient:
         private_key: rsa.RSAPrivateKey,
         environment: Environment = Environment.DEMO,
     ):
-        """Initializes the client with the provided API key and private key.
-
-        Args:
-            key_id (str): Your Kalshi API key ID.
-            private_key (rsa.RSAPrivateKey): Your RSA private key.
-            environment (Environment): The API environment to use (DEMO or PROD).
-        """
         self.key_id = key_id
         self.private_key = private_key
         self.environment = environment
@@ -258,14 +251,6 @@ class KalshiHttpClient(KalshiBaseClient):
         limit: int = 1000,
         fetch_all: bool = True,
     ):
-        """
-        Get markets from Kalshi GET /markets.
-
-        For a **specific day's weather strikes** (e.g. KXHIGHMIA-26MAR27), pass **event_ticker**,
-        not series_ticker — otherwise the API returns an incomplete list and strikes like B85.5 can be missing.
-
-        Paginates until cursor is empty when fetch_all is True.
-        """
         all_markets: list = []
         next_cursor: Optional[str] = None
         page_limit = min(1000, limit) if limit else 1000
@@ -299,11 +284,6 @@ class KalshiHttpClient(KalshiBaseClient):
         cursor: Optional[str] = None,
         fetch_all: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Retrieves orders. Default status='resting' returns only open (resting) orders.
-        API defaults to 100 per page (max 200). If fetch_all is True, paginates until no cursor.
-        See https://docs.kalshi.com/api-reference/orders/get-orders
-        """
         all_orders = []
         next_cursor = cursor
         page_limit = min(200, limit) if limit else 200
@@ -364,14 +344,6 @@ class KalshiHttpClient(KalshiBaseClient):
         *,
         count_fp: Optional[str] = None,
     ) -> Any:
-        """Close an existing position **at market** (reduce-only sell on ``side``).
-
-        Posts ``type: market`` with ``action: sell`` and ``reduce_only: true`` so the
-        exchange matches against current liquidity instead of resting a limit at one price.
-
-        ``side`` is the outcome you are long (``yes`` or ``no``) — the same ``side`` you
-        bought when opening; we **sell** that leg to flatten.
-        """
         body: Dict[str, Any] = {
             "ticker": ticker,
             "side": side,
@@ -379,10 +351,10 @@ class KalshiHttpClient(KalshiBaseClient):
             "type": "market",
             "reduce_only": True,
         }
-        if count is not None:
-            body["count"] = int(count)
         if count_fp is not None:
-            body["count_fp"] = count_fp
+            body["count_fp"] = str(count_fp).strip()
+        elif count is not None:
+            body["count"] = int(count)
         return self.post(self.portfolio_url + "/orders", body=body)
 
     def cancel_open_order(self, order_id: Optional[str] = None):

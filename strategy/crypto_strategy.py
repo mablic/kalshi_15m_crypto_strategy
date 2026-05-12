@@ -8,15 +8,7 @@ import sys
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from lib.trade_log import (
-    append_trade_log,
-    format_log_bayesian,
-    format_log_datetime,
-    format_log_entry,
-    format_log_exit,
-    format_log_trade_enter,
-    format_log_trade_exit,
-)
+from lib.trade_log import log_bayesian, log_entry, log_exit, log_trade_enter, log_trade_exit
 from strategy.models import GET_STRATEGY_MODEL, STRATEGY_LOADER
 from strategy.crypto_bayesian_strategy import CRYPTO_BAYESIAN_STRATEGY
 
@@ -62,7 +54,7 @@ class CRYPTO_STRATEGY_ENTRY_TIME(CRYPTO_STRATEGY_BASE):
 
 class CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(CRYPTO_STRATEGY_BASE):
     def __init__(self, trade_side: str = "yes"):
-        super().__init__(name="ENTRY_TRADE_SIDE_CYCLE", type=trade_side)
+        super().__init__(name="ENTRY_TRADE_SIDE_CYCLE", type="buy")
         self.trade_side = trade_side
 
     def generate_signals(self, ctx: MarketContext) -> bool:
@@ -152,14 +144,7 @@ class CRYPTO_STRATEGY_BAYESIAN_ENTRY(CRYPTO_STRATEGY_BASE):
         probability = self.bayesian_strategy.generate_probability(input_values=input_values)
         bayesian_ok = probability > self.threshold
         bayesian_signal = "buy" if bayesian_ok else "no"
-        append_trade_log(
-            format_log_bayesian(
-                format_log_datetime(),
-                bayesian_signal,
-                probability,
-                self.threshold,
-            )
-        )
+        log_bayesian(bayesian_signal, probability, self.threshold)
         return bayesian_signal
 
 class CRYPTO_STRATEGY_MANAGER:
@@ -235,7 +220,7 @@ class CRYPTO_STRATEGY_MANAGER:
                 results[name] = signals
             entry_gate = "buy" if all(x.lower() == "buy" for x in results.values()) else "no"
             breakdown = " ".join(f"{k}={v}" for k, v in results.items())
-            append_trade_log(format_log_entry(format_log_datetime(), entry_gate, breakdown))
+            log_entry(entry_gate, breakdown)
             if entry_gate == "buy":
                 self.in_trade = True
                 self.trade_entry_time = ctx.trade_entry_time
@@ -243,14 +228,7 @@ class CRYPTO_STRATEGY_MANAGER:
                 self.trade_entry_price = max(self.minimum_entry_price, ctx.entry_price)
                 self.trade_lot = ctx.trade_lot
                 self.trade_decision_type = 'buy'
-                append_trade_log(
-                    format_log_trade_enter(
-                        format_log_datetime(),
-                        ctx.trade_side,
-                        self.trade_entry_price,
-                        results,
-                    )
-                )
+                log_trade_enter(ctx.trade_side, self.trade_entry_price, results)
         else:
             self.trade_direction = 'sell'
             for name, strategy in self._sell_strategies.items():
@@ -265,20 +243,13 @@ class CRYPTO_STRATEGY_MANAGER:
             else:
                 exit_gate = "hold"
             exit_breakdown = " ".join(f"{k}={v}" for k, v in results.items())
-            append_trade_log(format_log_exit(format_log_datetime(), exit_gate, exit_breakdown))
+            log_exit(exit_gate, exit_breakdown)
             if sell_hit:
                 self.trade_exit_price = min(self.maximum_exit_price, ctx.exit_price)
                 self.trade_completed = True
                 self.trade_exit_time = ctx.trade_exit_time
                 self.trade_decision_type = 'sell'
-                append_trade_log(
-                    format_log_trade_exit(
-                        format_log_datetime(),
-                        "sell",
-                        self.trade_side,
-                        self.trade_exit_price,
-                    )
-                )
+                log_trade_exit("sell", self.trade_side, self.trade_exit_price)
             elif stop_hit:
                 self.trade_completed = True
                 self.trade_exit_time = ctx.trade_exit_time
@@ -287,14 +258,7 @@ class CRYPTO_STRATEGY_MANAGER:
                     self.trade_exit_price = ctx.current_yes_bid_price
                 else:
                     self.trade_exit_price = ctx.current_no_bid_price
-                append_trade_log(
-                    format_log_trade_exit(
-                        format_log_datetime(),
-                        "stop",
-                        self.trade_side,
-                        self.trade_exit_price,
-                    )
-                )
+                log_trade_exit("stop", self.trade_side, self.trade_exit_price)
 
     def get_trade_decision(self):
         return self.trade_decision_type

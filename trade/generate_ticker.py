@@ -1,15 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 _KALSHI_15M_MONTH = (
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 )
-
-_KALSHI_15M_MINUTE = (
-    "15", "30", "45", "00",
-)
-
 
 def _kalshi_series_with_kx_prefix(series: str) -> str:
     """Kalshi API series tickers are e.g. ``KXBTC15M``, not ``BTC15M``."""
@@ -28,15 +23,24 @@ class GENERATE_TICKER:
 
     def _generate_ticker(self):
 
-        current_time = datetime.now(tz=ZoneInfo('America/New_York'))
-        current_time = current_time.replace(second=0, microsecond=0)
+        self.ticker_list = []
+        ny_now = datetime.now(tz=ZoneInfo("America/New_York")).replace(second=0, microsecond=0)
 
         for series in self.series_list:
             ser = _kalshi_series_with_kx_prefix(series)
-            minute = _KALSHI_15M_MINUTE[current_time.minute // 15]
-            hour = current_time.hour if minute != "00" else current_time.hour + 1
-            ticker = f"{ser}-{current_time.year % 100:02d}{_KALSHI_15M_MONTH[current_time.month - 1]}{current_time.day:02d}{hour:02d}{minute}-{minute}"
-            self.ticker_list.append(ticker)
+            q = ny_now.minute // 15
+            # End of current quarter-hour in NY; :45–:59 → top of next hour (never ``hour == 24`` on same day).
+            if q == 3:
+                event_end = ny_now.replace(minute=45) + timedelta(minutes=15)
+            else:
+                event_end = ny_now.replace(minute=(q + 1) * 15)
+            # event_utc = event_end.astimezone(timezone.utc)
+            yy = event_end.year % 100
+            mon = _KALSHI_15M_MONTH[event_end.month - 1]
+            dd = event_end.day
+            hh = event_end.hour
+            mm = event_end.minute
+            self.ticker_list.append(f"{ser}-{yy:02d}{mon}{dd:02d}{hh:02d}{mm:02d}-{mm:02d}")
 
     def get_ticker_list(self):
         self._generate_ticker()
