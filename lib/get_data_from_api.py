@@ -127,20 +127,46 @@ class GET_DATA_FROM_API:
                 data_time = pd.to_datetime(
                     result["end_period_ts"], unit="s", utc=True
                 ).tz_convert("America/Chicago")
+                yes_ask_open_dollar = round(float(result["yes_ask"]["open_dollars"]), 4)
+                yes_ask_close_dollar = round(float(result["yes_ask"]["close_dollars"]), 4)
                 yes_ask_high_dollar = round(float(result["yes_ask"]["high_dollars"]), 4)
                 yes_ask_low_dollar = round(float(result["yes_ask"]["low_dollars"]), 4)
+                yes_bid_open_dollar = round(float(result["yes_bid"]["open_dollars"]), 4)
+                yes_bid_close_dollar = round(float(result["yes_bid"]["close_dollars"]), 4)
                 yes_bid_high_dollar = round(float(result["yes_bid"]["high_dollars"]), 4)
                 yes_bid_low_dollar = round(float(result["yes_bid"]["low_dollars"]), 4)
+                no_ask_open_dollar = round(1 - yes_bid_close_dollar, 4)
+                no_ask_close_dollar = round(1 - yes_bid_open_dollar, 4)
+                no_ask_high_dollar = round(1 - yes_bid_high_dollar, 4)
                 no_ask_low_dollar = round(1 - yes_bid_low_dollar, 4)
+                no_bid_open_dollar = round(1 - yes_ask_close_dollar, 4)
+                no_bid_close_dollar = round(1 - yes_ask_open_dollar, 4)
                 no_bid_high_dollar = round(1 - yes_ask_high_dollar, 4)
+                no_bid_low_dollar = round(1 - yes_ask_low_dollar, 4)
+                volume_fp = round(float(result["volume_fp"]), 4)
+                open_interest_fp = round(float(result["open_interest_fp"]), 4)
                 tmp_dict = {
                     "datetime": data_time,
                     "ticker": ticker,
                     "floor_strike": round(float(market_response["market"]["floor_strike"]), 4),
+                    "volume_fp": volume_fp,
+                    "open_interest_fp": open_interest_fp,
+                    "yes_ask_open_dollar": yes_ask_open_dollar,
+                    "yes_ask_high_dollar": yes_ask_high_dollar,
                     "yes_ask_low_dollar": yes_ask_low_dollar,
+                    "yes_ask_close_dollar": yes_ask_close_dollar,
+                    "yes_bid_open_dollar": yes_bid_open_dollar,
                     "yes_bid_high_dollar": yes_bid_high_dollar,
+                    "yes_bid_low_dollar": yes_bid_low_dollar,
+                    "yes_bid_close_dollar": yes_bid_close_dollar,
+                    "no_ask_open_dollar": no_ask_open_dollar,
+                    "no_ask_high_dollar": no_ask_high_dollar,
                     "no_ask_low_dollar": no_ask_low_dollar,
+                    "no_ask_close_dollar": no_ask_close_dollar,
+                    "no_bid_open_dollar": no_bid_open_dollar,
                     "no_bid_high_dollar": no_bid_high_dollar,
+                    "no_bid_low_dollar": no_bid_low_dollar,
+                    "no_bid_close_dollar": no_bid_close_dollar,
                 }
                 results.append(tmp_dict)
 
@@ -205,7 +231,7 @@ if __name__ == "__main__":
     df = get_market_data_from_api(
         series_ticker="KXBTC15M",
         end_time=end,
-        lookback_minutes=60,
+        lookback_minutes=5,
     )
     print(df)
     # data = get_data_from_api.get_market_candlesticks_by_ticker("KXBTC15M-26APR221030-30")

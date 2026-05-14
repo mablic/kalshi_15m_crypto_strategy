@@ -18,15 +18,16 @@ from generate_ticker import GENERATE_TICKER
 from order_book import ORDER_BOOK_MANAGER, TICKER_ORDER_BOOK, ORDER
 from lib.trade_log import dec2, error, info, log, log_market, log_sep
 
-ENTRY_TIME = 3
-ENTRY_PRICE = 0.3
+ENTRY_TIME = 4
+ENTRY_PRICE = 0.1
 EXIT_PRICE = 0.7
 ENTRY_DISTANCE = 300
-STOP_TIME = 1
+STOP_TIME = 0
 THRESHOLD = 0.42
 TRADE_SIDE = "yes"
 TRADE_LOT = 1
 WAIT_TIME = 30
+ENTRY_HOURS = [6,7,8,9,12,13,14,15,16,17,18,19,20,21,22,23]
 
 class TRADE:
     def __init__(self, series_list: list[str], client: KalshiHttpClient):
@@ -94,10 +95,12 @@ class TRADE:
         self.strategy.add_strategy(CRYPTO_STRATEGY_EXIT_PRICE(exit_price=EXIT_PRICE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_DISTANCE(entry_distance=ENTRY_DISTANCE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_STOP_TIME(stop_time=STOP_TIME))
-        self.strategy.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=THRESHOLD))
+        # self.strategy.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=THRESHOLD))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(trade_side=TRADE_SIDE))
+        self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_HOURS(entry_hours=ENTRY_HOURS))
         self.strategy.set_minimum_entry_price(ENTRY_PRICE)
         self.strategy.set_maximum_exit_price(EXIT_PRICE)
+        self.strategy.set_to_production()
 
     def get_filled_orders_from_api(self, ticker: str):
         try:
@@ -281,8 +284,7 @@ class TRADE:
             trade_time = row.index
             chi = ZoneInfo("America/Chicago")
             clock_min = datetime.now(tz=chi).replace(second=0, microsecond=0)
-            mod = clock_min.minute % 15
-            entry_time = 15 if mod == 0 else 15 - mod
+            entry_time = 0 if clock_min.minute % 15 == 0 else 15 - clock_min.minute % 15
             distance = round(
                 float(0.0 if row["close"] is None else float(row["close"]))
                 - float(0.0 if row["floor_strike"] is None else float(row["floor_strike"])),
@@ -312,6 +314,7 @@ class TRADE:
             trade_side = None
             entry_price = None
             exit_price = None
+            entry_hour = datetime.now(tz=ZoneInfo('America/Chicago')).hour
             if self.strategy.get_trade_side() is None:
                 entry_price = min(yes_ask_price, no_ask_price)
                 exit_price = max(yes_bid_price, no_bid_price)
@@ -334,15 +337,15 @@ class TRADE:
                 distance,
             )
             if self.strategy.get_trade_side() is None:
-                if yes_ask_price < no_ask_price:
-                    trade_side = 'yes'
-                else:
-                    trade_side = 'no'
+                # if yes_ask_price < no_ask_price:
+                trade_side = 'yes'
+                # else:
+                #     trade_side = 'no'
             else:
                 trade_side = self.strategy.get_trade_side()
             self.set_strategy_ctx(MarketContext(entry_time=entry_time, stop_time=entry_time, entry_price=entry_price, 
                 exit_price=exit_price, distance=distance, trade_side=trade_side, trade_lot=self.trade_lot, 
-                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters))
+                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters, entry_hour=entry_hour))
             self.strategy.run_all_strategies(ctx=self.ctx)
             trade_decision = self.strategy.get_trade_decision()
             return trade_decision
@@ -365,10 +368,24 @@ class TRADE:
                 ticker = row['ticker'] 
                 open_order = self.get_open_order_by_ticker(ticker)
                 open_filled_orders = self.get_filled_orders_from_api(ticker)
+                for order in open_filled_orders:
+                    if order.action == 'buy':
+                        self.strategy.set_buy_filled()
+                        break
+                    elif order.action == 'sell':
+                        self.strategy.set_sell_filled()
+                        break
                 # if nothing is open, create or filled
                 if not self.order_book_managers.check_ticker_in_order_book_manager(ticker):
+                    log_sep()
+                    log("ADD_ORDER_BOOK_MANAGER", ticker, category="TRADE")
+                    self.strategy.reset_trade()
+                    self.order_book_managers.clean_order_book_manager()
                     self.order_book_managers.add_order_book_manager(TICKER_ORDER_BOOK(ticker))
+
                 trade_decision = self.get_trade_decision_by_ticker(ticker, row)
+                if trade_decision == 'completed':
+                    continue
                 # trade_decision = 'buy'
                 order_book = self.get_order_book_by_ticker(ticker)
                 if trade_decision == 'buy' and not open_order and not self.order_book_managers.get_order_book_manager(ticker).is_in_trade():

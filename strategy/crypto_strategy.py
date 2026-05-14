@@ -20,6 +20,7 @@ class MarketContext:
     exit_price: float | None = None
     distance: float | None = None
     entry_time: int | None = None
+    entry_hour: int | None = None
     stop_time: int | None = None
     trade_side: str | None = None
     trade_lot: float | None = None
@@ -48,6 +49,16 @@ class CRYPTO_STRATEGY_ENTRY_TIME(CRYPTO_STRATEGY_BASE):
 
     def generate_signals(self, ctx: MarketContext) -> bool:
         if ctx.entry_time >= self.entry_time:
+            return "buy"
+        return "no"
+
+class CRYPTO_STRATEGY_ENTRY_HOURS(CRYPTO_STRATEGY_BASE):
+    def __init__(self, entry_hours: list[int]):
+        super().__init__(name="ENTRY_HOUR_CYCLE", type="buy")
+        self.entry_hours = entry_hours
+
+    def generate_signals(self, ctx: MarketContext) -> bool:
+        if ctx.entry_hour in self.entry_hours:
             return "buy"
         return "no"
 
@@ -163,6 +174,9 @@ class CRYPTO_STRATEGY_MANAGER:
         self.maximum_exit_price = None
         self.trade_entry_time = None
         self.trade_exit_time = None
+        self.production = False
+        self.buy_filled = False
+        self.sell_filled = False
 
     def set_minimum_entry_price(self, price: float):
         self.minimum_entry_price = price
@@ -176,6 +190,9 @@ class CRYPTO_STRATEGY_MANAGER:
         elif strategy.type == "sell":
             self._sell_strategies[strategy.name] = strategy
         # print(f"Added strategy: {strategy.name}")
+
+    def set_to_production(self):
+        self.production = True
 
     def remove_strategy(self, name: str) -> None:
         if name in self._strategies:
@@ -209,9 +226,16 @@ class CRYPTO_STRATEGY_MANAGER:
             return True
         return False
 
+    def set_buy_filled(self) -> bool:
+        self.buy_filled = True
+    
+    def set_sell_filled(self) -> bool:
+        self.sell_filled = True
+
     def run_all_strategies(self, ctx: MarketContext) -> dict[str, bool]:
         results = {}
         if self.trade_completed:
+            self.trade_decision_type = 'completed'
             return
         if not self.in_trade:
             self.trade_direction = 'buy'
@@ -229,7 +253,7 @@ class CRYPTO_STRATEGY_MANAGER:
                 self.trade_lot = ctx.trade_lot
                 self.trade_decision_type = 'buy'
                 log_trade_enter(ctx.trade_side, self.trade_entry_price, results)
-        else:
+        elif not self.production or (self.buy_filled and self.production):
             self.trade_direction = 'sell'
             for name, strategy in self._sell_strategies.items():
                 signals = strategy.generate_signals(ctx)
@@ -246,12 +270,10 @@ class CRYPTO_STRATEGY_MANAGER:
             log_exit(exit_gate, exit_breakdown)
             if sell_hit:
                 self.trade_exit_price = min(self.maximum_exit_price, ctx.exit_price)
-                self.trade_completed = True
                 self.trade_exit_time = ctx.trade_exit_time
                 self.trade_decision_type = 'sell'
                 log_trade_exit("sell", self.trade_side, self.trade_exit_price)
             elif stop_hit:
-                self.trade_completed = True
                 self.trade_exit_time = ctx.trade_exit_time
                 self.trade_decision_type = 'stop'
                 if self.trade_side.lower() == 'yes':
@@ -259,7 +281,16 @@ class CRYPTO_STRATEGY_MANAGER:
                 else:
                     self.trade_exit_price = ctx.current_no_bid_price
                 log_trade_exit("stop", self.trade_side, self.trade_exit_price)
-
+            if not self.production:
+                self.trade_completed = True
+            else:
+                if self.production and self.buy_filled and self.sell_filled:
+                    self.trade_completed = True
+        else:
+            exit_gate = "hold"
+            exit_breakdown = " ".join(f"{k}={v}" for k, v in results.items())
+            log_exit(exit_gate, exit_breakdown)
+            
     def get_trade_decision(self):
         return self.trade_decision_type
 
@@ -293,6 +324,8 @@ class CRYPTO_STRATEGY_MANAGER:
         self.trade_side = None
         self.trade_lot = None
         self.trade_decision_type = 'No'
+        self.buy_filled = False
+        self.sell_filled = False
 
 
 if __name__ == "__main__":

@@ -126,19 +126,18 @@ class TICKER_ORDER_BOOK:
                 filled_qty = 0
                 for filled_sell_order in filled_sell_orders:
                     filled_qty += float(filled_sell_order.quantity)
-                if filled_qty > 0:
-                    # open sell order
-                    order_book_qty = float(open_sell_orders[0].quantity) - float(open_sell_orders[0].remaining_quantity)
-                    self.open_sell_orders.remaining_quantity = float(open_sell_orders[0].remaining_quantity)
-                    if order_book_qty != filled_qty:
-                        log_generated(f"Order book quantity {order_book_qty} is not equal to filled quantity {filled_qty}")
-                        # only process if miss match to preventing over sell
-                        to_be_trade_order = copy.copy(open_sell_orders[0])
-                        to_be_trade_order.remaining_quantity = order_book_qty
-                        to_be_trade_order.quantity = order_book_qty
-                        to_be_trade_order.entry_price = to_be_trade_order.expected_exit_price
-                        to_be_trade_order.action = 'sell'
-                        self.to_be_trade_list.append(to_be_trade_order)
+                # open sell order
+                order_book_qty = float(open_sell_orders[0].quantity) - float(open_sell_orders[0].remaining_quantity)
+                self.open_sell_orders.remaining_quantity = float(open_sell_orders[0].remaining_quantity)
+                if order_book_qty != filled_qty:
+                    log_generated(f"Order book quantity {order_book_qty} is not equal to filled quantity {filled_qty}")
+                    # only process if miss match to preventing over sell
+                    to_be_trade_order = copy.copy(open_sell_orders[0])
+                    to_be_trade_order.remaining_quantity = order_book_qty
+                    to_be_trade_order.quantity = order_book_qty
+                    to_be_trade_order.entry_price = to_be_trade_order.expected_exit_price
+                    to_be_trade_order.action = 'sell'
+                    self.to_be_trade_list.append(to_be_trade_order)
             else:
                 filled_buy_qty = 0
                 filled_sell_qty = 0
@@ -194,6 +193,4 @@ class ORDER_BOOK_MANAGER:
         return self.order_book_managers[ticker]
 
     def clean_order_book_manager(self):
-        for ticker in self.order_book_managers.keys():
-            if self.order_book_managers[ticker].check_trade_completed():
-                del self.order_book_managers[ticker]
+        self.order_book_managers.clear()

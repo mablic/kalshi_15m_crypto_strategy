@@ -109,7 +109,8 @@ def format_log_exit(ts: str, gate: str, breakdown: str) -> str:
         "hold": "stay in position",
     }
     tail = notes.get(gate.lower(), "")
-    return f"{ts}  | {'EXIT':<9} | >>> GATE={g} <<<  {tail}  ::  {breakdown}"
+    label = "HOLD" if gate.lower() == "hold" else "EXIT"
+    return f"{ts}  | {label:<9} | >>> GATE={g} <<<  {tail}  ::  {breakdown}"
 
 
 def format_log_trade_enter(ts: str, side, entry_px, results: dict) -> str:
@@ -155,19 +156,6 @@ def log(
     ts: datetime | str | None = None,
     path: Path | None = None,
 ) -> None:
-    """One line: ``{ts}  | {CATEGORY}  | {parts joined with spaces}``.
-
-    Parameters
-    ----------
-    *parts
-        Message fragments (strings, numbers, exceptions — ``str()`` applied).
-    category
-        Short label, left-padded to 9 chars (e.g. ``INFO``, ``ERROR``, ``PLACE``).
-    ts
-        ``None`` = now (Chicago). ``datetime`` = formatted in Chicago. ``str`` = used as-is.
-    path
-        Override log file (default ``trade/trade_log.txt``).
-    """
     ts_str = _format_ts(ts)
     body = " ".join(str(p) for p in parts)
     line = f"{ts_str}  | {category.upper():<9} | {body}"
@@ -195,11 +183,6 @@ def debug(*parts: Any, ts: datetime | str | None = None, path: Path | None = Non
 
 
 def generate_log_line(*parts: Any, ts: datetime | str | None = None) -> str:
-    """Build one line: Chicago timestamp and a message (no category column).
-
-    ``ts`` is ``None`` (now), a ``datetime`` (formatted in Chicago), or a string used as-is.
-    ``parts`` are joined with spaces, same as :func:`log`.
-    """
     body = " ".join(str(p) for p in parts)
     return f"{_format_ts(ts)}  | {body}"
 
