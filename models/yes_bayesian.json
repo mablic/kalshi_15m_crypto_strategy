@@ -7,7 +7,7 @@
       0.5862
     ]
   },
-  "1m_yes_dist_momentum": {
+  "m1_yes_dist_momentum": {
     "good": [
       -17.507,
       51.8947
@@ -17,7 +17,7 @@
       48.4898
     ]
   },
-  "3m_yes_dist_momentum": {
+  "m3_yes_dist_momentum": {
     "good": [
       -29.038,
       82.5982
@@ -27,7 +27,7 @@
       73.5574
     ]
   },
-  "5m_yes_dist_momentum": {
+  "m5_yes_dist_momentum": {
     "good": [
       -31.15,
       93.6206

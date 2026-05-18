@@ -23,11 +23,11 @@ ENTRY_PRICE = 0.1
 EXIT_PRICE = 0.7
 ENTRY_DISTANCE = 300
 STOP_TIME = 0
-THRESHOLD = 0.42
+THRESHOLD = 0.15
 TRADE_SIDE = "yes"
 TRADE_LOT = 1
 WAIT_TIME = 30
-ENTRY_HOURS = [6,7,8,9,12,13,14,15,16,17,18,19,20,21,22,23]
+ENTRY_HOURS = [6,7,8,9,10]
 
 class TRADE:
     def __init__(self, series_list: list[str], client: KalshiHttpClient):
@@ -67,26 +67,56 @@ class TRADE:
         kalshi_cols = [c for c in api_df.columns if c in df_merged.columns]
         df_merged[kalshi_cols] = df_merged[kalshi_cols].bfill().ffill()
 
-        df_merged["yes_dist"] = df_merged["close"] - df_merged["floor_strike"]
-        df_merged["log_return"] = np.log(df_merged["close"] / df_merged["close"].shift(1))
-        df_merged["3m_log_return"] = df_merged["log_return"].rolling(3).std()
-        df_merged["5m_log_return"] = df_merged["log_return"].rolling(5).std()
-        df_merged["ma3"] = df_merged["close"].rolling(3).mean()
-        df_merged["ma5"] = df_merged["close"].rolling(5).mean()
-        df_merged["ma3_vs_strike"] = (df_merged["ma3"] - df_merged["floor_strike"]) / df_merged[
-            "floor_strike"
-        ] * 100
-        df_merged["ma5_vs_strike"] = (df_merged["ma5"] - df_merged["floor_strike"]) / df_merged[
-            "floor_strike"
-        ] * 100
-        df_merged["yes_dist_pct"] = df_merged["yes_dist"] / df_merged["floor_strike"] * 100
-        df_merged["1m_yes_dist_momentum"] = df_merged["yes_dist"] - df_merged["yes_dist"].shift(1)
-        df_merged["3m_yes_dist_momentum"] = df_merged["yes_dist"] - df_merged["yes_dist"].shift(3)
-        df_merged["5m_yes_dist_momentum"] = df_merged["yes_dist"] - df_merged["yes_dist"].shift(5)
-        df_merged["time_decay"] = np.where(
-            df_merged.index.minute % 15 == 0, 0, 15 - df_merged.index.minute % 15
-        )
-        df_merged = df_merged.dropna()
+        df_calc = df_merged
+        for side in ("yes", "no"):
+            ask_c = f"{side}_ask_close_dollar"
+            bid_c = f"{side}_bid_close_dollar"
+            if ask_c not in df_calc.columns:
+                if side == "yes":
+                    df_calc[ask_c] = df_calc["yes_ask_low_dollar"]
+                    df_calc[bid_c] = df_calc["yes_bid_high_dollar"]
+                else:
+                    df_calc[ask_c] = df_calc["no_ask_low_dollar"]
+                    df_calc[bid_c] = df_calc["no_bid_high_dollar"]
+        if "volume_fp" not in df_calc.columns:
+            df_calc["volume_fp"] = np.nan
+        if "open_interest_fp" not in df_calc.columns:
+            df_calc["open_interest_fp"] = np.nan
+        # Outer join / API can leave these as object dtype with str values — must be numeric for math.
+        df_calc["volume_fp"] = pd.to_numeric(df_calc["volume_fp"], errors="coerce")
+        df_calc["open_interest_fp"] = pd.to_numeric(df_calc["open_interest_fp"], errors="coerce")
+
+        base_dist = df_calc["close"] - df_calc["floor_strike"]
+        for side in ("yes", "no"):
+            df_calc[f"{side}_dist"] = base_dist
+            df_calc[f"{side}_dist_pct"] = df_calc[f"{side}_dist"] / df_calc["floor_strike"] * 100
+            d = df_calc[f"{side}_dist"]
+            df_calc[f"m1_{side}_dist_momentum"] = d - d.shift(1)
+            df_calc[f"m3_{side}_dist_momentum"] = d - d.shift(3)
+            df_calc[f"m5_{side}_dist_momentum"] = d - d.shift(5)
+            df_calc[f"{side}_spread"] = (
+                df_calc[f"{side}_ask_close_dollar"] - df_calc[f"{side}_bid_close_dollar"]
+            )
+
+        df_calc["log_return"] = np.log(df_calc["close"] / df_calc["close"].shift(1))
+        df_calc["m3_log_return"] = df_calc["log_return"].rolling(3).std()
+        df_calc["m5_log_return"] = df_calc["log_return"].rolling(5).std()
+        df_calc["3m_log_return"] = df_calc["m3_log_return"]
+        df_calc["5m_log_return"] = df_calc["m5_log_return"]
+        df_calc["ma3"] = df_calc["close"].rolling(3).mean()
+        df_calc["ma5"] = df_calc["close"].rolling(5).mean()
+        df_calc["ma3_vs_strike"] = (df_calc["ma3"] - df_calc["floor_strike"]) / df_calc["floor_strike"] * 100
+        df_calc["ma5_vs_strike"] = (df_calc["ma5"] - df_calc["floor_strike"]) / df_calc["floor_strike"] * 100
+        df_calc["time_decay"] = np.where(df_calc.index.minute % 15 == 0, 0, 15 - df_calc.index.minute % 15)
+        df_calc["hour"] = df_calc.index.hour
+        df_calc["minute"] = df_calc.index.minute
+        vol_mean5 = df_calc["volume_fp"].rolling(5).mean()
+        df_calc["volume_surge"] = df_calc["volume_fp"] / vol_mean5.replace(0, np.nan)
+        df_calc["oi_change"] = df_calc["open_interest_fp"] - df_calc["open_interest_fp"].shift(1)
+        df_calc["1m_yes_dist_momentum"] = df_calc["m1_yes_dist_momentum"]
+        df_calc["3m_yes_dist_momentum"] = df_calc["m3_yes_dist_momentum"]
+        df_calc["5m_yes_dist_momentum"] = df_calc["m5_yes_dist_momentum"]
+        df_merged = df_calc.dropna()
         return df_merged
 
     def _set_strategy(self):
@@ -95,7 +125,7 @@ class TRADE:
         self.strategy.add_strategy(CRYPTO_STRATEGY_EXIT_PRICE(exit_price=EXIT_PRICE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_DISTANCE(entry_distance=ENTRY_DISTANCE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_STOP_TIME(stop_time=STOP_TIME))
-        # self.strategy.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=THRESHOLD))
+        self.strategy.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=THRESHOLD))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(trade_side=TRADE_SIDE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_HOURS(entry_hours=ENTRY_HOURS))
         self.strategy.set_minimum_entry_price(ENTRY_PRICE)
@@ -176,6 +206,8 @@ class TRADE:
                 'datetime': bar_time,
                 'ticker': market_data['ticker'],
                 'floor_strike': market_data['floor_strike'],
+                'volume_fp': market_data['volume_fp'],
+                'open_interest_fp': market_data['open_interest_fp'],
                 "yes_ask_low_dollar": yes_ask_low,
                 "yes_bid_high_dollar": yes_bid_high,
                 "no_ask_low_dollar": no_ask_low,
@@ -304,6 +336,11 @@ class TRADE:
                 '3m_log_return': row['3m_log_return'],
                 '5m_log_return': row['5m_log_return'],
                 'yes_dist': row['yes_dist'],
+                'yes_spread': row['yes_spread'],
+                'volume_surge': row['volume_surge'],
+                'oi_change': row['oi_change'],
+                'minute': row['minute'],
+                'hour': row['hour'],
             }
 
             # yes_ask_price, no_ask_price, yes_bid_price, no_bid_price = self.get_price_from_order_book(row)
@@ -345,7 +382,7 @@ class TRADE:
                 trade_side = self.strategy.get_trade_side()
             self.set_strategy_ctx(MarketContext(entry_time=entry_time, stop_time=entry_time, entry_price=entry_price, 
                 exit_price=exit_price, distance=distance, trade_side=trade_side, trade_lot=self.trade_lot, 
-                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters, entry_hour=entry_hour))
+                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters, entry_hour=entry_hour, production=self.strategy.production))
             self.strategy.run_all_strategies(ctx=self.ctx)
             trade_decision = self.strategy.get_trade_decision()
             return trade_decision
@@ -368,13 +405,14 @@ class TRADE:
                 ticker = row['ticker'] 
                 open_order = self.get_open_order_by_ticker(ticker)
                 open_filled_orders = self.get_filled_orders_from_api(ticker)
-                for order in open_filled_orders:
-                    if order.action == 'buy':
-                        self.strategy.set_buy_filled()
-                        break
-                    elif order.action == 'sell':
-                        self.strategy.set_sell_filled()
-                        break
+                if open_filled_orders:
+                    for order in open_filled_orders:
+                        if order.action == 'buy':
+                            self.strategy.set_buy_filled()
+                            break
+                        elif order.action == 'sell':
+                            self.strategy.set_sell_filled()
+                            break
                 # if nothing is open, create or filled
                 if not self.order_book_managers.check_ticker_in_order_book_manager(ticker):
                     log_sep()

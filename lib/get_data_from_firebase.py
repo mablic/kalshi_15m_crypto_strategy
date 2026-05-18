@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 _COLLECTION = "kalshi"
 _CRYPTO_COLLECTION = "crypto"
 _CRYPTO_BAR_COLUMNS = ("datetime", "open", "high", "low", "close", "tick_count")
+_LIB_DIR = Path(__file__).resolve().parent
 
 # Kalshi 15m-style middle segment: YY + MON + DD + HHMM (UTC), e.g. 26APR080115 -> 2026-04-08 01:15 UTC
 _KALSHI_EVENT_MID = re.compile(r"^(\d{2})([A-Z]{3})(\d{2})(\d{4})$", re.IGNORECASE)
@@ -75,9 +76,28 @@ def read_kalshi_collection():
     return out
 
 
-def get_tickers_by_series(series_ticker: str) -> list[str]:
+def _tickers_by_series_cache_path(series_ticker: str) -> Path:
+    """CSV DataFrame cache next to this module: one column ``ticker``."""
+    safe = series_ticker.strip().upper().replace("/", "_")
+    return _LIB_DIR / f"tickers_by_series_{safe}.csv"
+
+
+def get_tickers_by_series(
+    series_ticker: str,
+    *,
+    use_cache: bool = True,
+    force_refresh: bool = False,
+) -> list[str]:
 
     series_ticker = series_ticker.strip()
+    cache_path = _tickers_by_series_cache_path(series_ticker)
+    if use_cache and not force_refresh and cache_path.is_file():
+        try:
+            df = pd.read_csv(cache_path)
+            if "ticker" in df.columns and len(df.index) > 0:
+                return df["ticker"].astype(str).tolist()
+        except Exception:
+            pass
     q = _db().collection(_COLLECTION).where(
         filter=FieldFilter("series_ticker", "==", series_ticker)
     )
@@ -89,6 +109,11 @@ def get_tickers_by_series(series_ticker: str) -> list[str]:
         if t not in seen:
             seen.add(t)
             tickers.append(t)
+    if use_cache and tickers:
+        try:
+            pd.DataFrame({"ticker": tickers}).to_csv(cache_path, index=False)
+        except Exception:
+            pass
     return tickers
 
 

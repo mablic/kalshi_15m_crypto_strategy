@@ -9,32 +9,68 @@ from datetime import datetime, timezone, timedelta
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from strategy import *
 from lib import *
+from lib.trade_log import error, log
+
+_BACKTESTER_LOG = Path(__file__).resolve().parent / "backtester.log"
+
+# Per-ticker OHLCV+quotes from get_market_data(); reused across parameter grid to avoid 429s.
+_BT_MARKET_DF_CACHE: dict[str, pd.DataFrame] = {}
+
+
+def clear_backtester_market_cache() -> None:
+    """Drop cached DataFrames from get_market_data (e.g. between full study runs)."""
+    _BT_MARKET_DF_CACHE.clear()
+def _backtest_result_log_line(result: dict) -> str:
+    """Format trade result for BACKTEST log; pnl and dollar fields to 2 decimals."""
+    parts = []
+    for key, value in result.items():
+        if value is None:
+            parts.append(f"{key}: None")
+            continue
+        if key in ("pnl", "entry_price", "exit_price", "trade_lot"):
+            try:
+                parts.append(f"{key}: {float(value):.2f}")
+            except (TypeError, ValueError):
+                parts.append(f"{key}: {value}")
+        else:
+            parts.append(f"{key}: {value}")
+    return "[" + ", ".join(parts) + "]"
+
 
 class CRYPTO_STRATEGY_BACKTESTER:
     def __init__(self, strategy: CRYPTO_STRATEGY_MANAGER):
         self.strategy = strategy
         self.market_data: pd.DataFrame | None = None
         self.parameters_data: pd.DataFrame | None = None
+        self._current_ticker: str | None = None
 
     def add_parameters_data(self, parameters_data: pd.DataFrame):
         try:
             self.parameters_data = parameters_data
         except Exception as e:
-            print(f"Error setting parameters data index: {e}")
+            error("Error setting parameters data index:", e, path=_BACKTESTER_LOG)
             self.parameters_data = None
 
-    def get_market_data(self, ticker: str):
+    def get_market_data(self, ticker: str, *, use_cache: bool = True):
+        """Load merged API+Firebase series for ``ticker``. Cached process-wide so each ticker is fetched once.
+
+        Note: ``add_parameters_data(df_merged)`` is separate (Bayesian features, often built from one reference
+        ticker). That does *not* replace this per-ticker price path — without cache, every grid cell × ticker
+        would re-hit the APIs and trigger rate limits (429).
+        """
+        self._current_ticker = ticker
+        if use_cache and ticker in _BT_MARKET_DF_CACHE:
+            self.market_data = _BT_MARKET_DF_CACHE[ticker]
+            return
         try:
-            # read frin firebase
-            # self.market_data = aggregate_snapshots_for_ticker(ticker)
-            # read from api
             api_data = get_market_data_by_ticker_api(ticker)
             firebase_data = get_crypto_market_data_by_ticker(ticker)
             merged_data = pd.merge(api_data, firebase_data, on='datetime', how='left')
             merged_data = merged_data.dropna()
+            _BT_MARKET_DF_CACHE[ticker] = merged_data
             self.market_data = merged_data
         except Exception as e:
-            print(f"Error getting market data: {e}")
+            error("Error getting market data:", e, path=_BACKTESTER_LOG)
             self.market_data = None
 
     def get_strategy_data(self):
@@ -117,6 +153,12 @@ class CRYPTO_STRATEGY_BACKTESTER:
                         '3m_log_return': params_df.loc[trade_time, '3m_log_return'],
                         '5m_log_return': params_df.loc[trade_time, '5m_log_return'],
                         'yes_dist': params_df.loc[trade_time, 'yes_dist'],
+                        'yes_spread': params_df.loc[trade_time, 'yes_spread'],
+                        'no_spread': params_df.loc[trade_time, 'no_spread'],
+                        'volume_surge': params_df.loc[trade_time, 'volume_surge'],
+                        'oi_change': params_df.loc[trade_time, 'oi_change'],
+                        'minute': params_df.loc[trade_time, 'minute'],
+                        'hour': params_df.loc[trade_time, 'hour'],
                     }
             except Exception:
                 pass
@@ -126,6 +168,8 @@ class CRYPTO_STRATEGY_BACKTESTER:
             no_ask_price = row['no_ask_low_dollar']
             yes_bid_price = row['yes_bid_high_dollar']
             no_bid_price = row['no_bid_high_dollar']
+            row_ticker = row["ticker"] if "ticker" in row.index and pd.notna(row.get("ticker")) else self._current_ticker
+            ticker_str = row_ticker if row_ticker is not None else "?"
             trade_side = None
             entry_price = None
             exit_price = None
@@ -139,17 +183,12 @@ class CRYPTO_STRATEGY_BACKTESTER:
                 else:
                     entry_price = no_ask_price
                     exit_price = no_bid_price
-            with open("data.txt", 'a') as f:
-                f.write(f"time is {entry_time}, yes_ask_price: {yes_ask_price}, yes_bid_price: {yes_bid_price}, no_ask_price: {no_ask_price}, no_bid_price: {no_bid_price}, yes_current_bid_price: {yes_bid_price}, no_current_bid_price: {no_bid_price}, distance: {distance}\n")
-            # if i == 0:
-            #     print(
-            #         f"{'time':>6}  {'y_ask':>7}  {'y_bid':>7}  {'n_ask':>7}  {'n_bid':>7}  "
-            #         f"{'dist':>8}"
-            #     )
-            #     print("  ".join("-" * w for w in (6, 7, 7, 7, 7, 8)))
-            # print(
-            #     f"{entry_time:6.2f}  {float(yes_ask_price):7.2f}  {float(yes_bid_price):7.2f}  "
-            #     f"{float(no_ask_price):7.2f}  {float(no_bid_price):7.2f} {distance:8.2f}"
+            # log(
+            #     f"ticker={ticker_str} time is {entry_time}, yes_ask_price: {yes_ask_price}, yes_bid_price: {yes_bid_price}, "
+            #     f"no_ask_price: {no_ask_price}, no_bid_price: {no_bid_price}, "
+            #     f"yes_current_bid_price: {yes_bid_price}, no_current_bid_price: {no_bid_price}, distance: {distance}",
+            #     category="BACKTEST",
+            #     path=_BACKTESTER_LOG,
             # )
             if self.strategy.get_trade_side() is None:
                 if yes_ask_price < no_ask_price:
@@ -160,7 +199,7 @@ class CRYPTO_STRATEGY_BACKTESTER:
                 trade_side = self.strategy.get_trade_side()
             self.set_strategy_ctx(MarketContext(entry_time=entry_time, stop_time=entry_time, entry_price=entry_price, 
                 exit_price=exit_price, distance=distance, trade_side=trade_side, trade_lot=self.lot_size, 
-                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters))
+                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters, production=self.strategy.production))
             self.strategy.run_all_strategies(ctx=self.ctx)
         
         return self.strategy.get_trade_result()
@@ -182,20 +221,55 @@ def backtest_bayesian_strategy_dataframe(backtest_time: datetime, ticker: str):
     filter_timestamp = df_crypto[df_crypto.index.minute.isin([0,15,30,45])].index[0]
     df_crypto = df_crypto[df_crypto.index >= filter_timestamp]
     df_merged = df_crypto.join(df_api, how='left')
-    df_merged['yes_dist'] = df_merged['close'] - df_merged['floor_strike']
-    df_merged['log_return'] = np.log(df_merged['close'] / df_merged['close'].shift(1))
-    df_merged['3m_log_return'] = df_merged['log_return'].rolling(3).std()
-    df_merged['5m_log_return'] = df_merged['log_return'].rolling(5).std()
-    df_merged['ma3'] = df_merged['close'].rolling(3).mean()
-    df_merged['ma5'] = df_merged['close'].rolling(5).mean()
-    df_merged['ma3_vs_strike'] = (df_merged['ma3'] - df_merged['floor_strike'])/df_merged['floor_strike'] * 100
-    df_merged['ma5_vs_strike'] = (df_merged['ma5'] - df_merged['floor_strike'])/df_merged['floor_strike'] * 100
-    df_merged['yes_dist_pct'] = df_merged['yes_dist'] / df_merged['floor_strike'] * 100
-    df_merged['1m_yes_dist_momentum'] = df_merged['yes_dist'] - df_merged['yes_dist'].shift(1)
-    df_merged['3m_yes_dist_momentum'] = df_merged['yes_dist'] - df_merged['yes_dist'].shift(3)
-    df_merged['5m_yes_dist_momentum'] = df_merged['yes_dist'] - df_merged['yes_dist'].shift(5)
-    df_merged['time_decay'] = np.where(df_merged.index.minute % 15 == 0, 0, 15 - df_merged.index.minute % 15)
-    df_merged = df_merged.dropna()
+    df_calc = df_merged
+    for side in ("yes", "no"):
+        ask_c = f"{side}_ask_close_dollar"
+        bid_c = f"{side}_bid_close_dollar"
+        if ask_c not in df_calc.columns:
+            if side == "yes":
+                df_calc[ask_c] = df_calc["yes_ask_low_dollar"]
+                df_calc[bid_c] = df_calc["yes_bid_high_dollar"]
+            else:
+                df_calc[ask_c] = df_calc["no_ask_low_dollar"]
+                df_calc[bid_c] = df_calc["no_bid_high_dollar"]
+    if "volume_fp" not in df_calc.columns:
+        df_calc["volume_fp"] = np.nan
+    if "open_interest_fp" not in df_calc.columns:
+        df_calc["open_interest_fp"] = np.nan
+    df_calc["volume_fp"] = pd.to_numeric(df_calc["volume_fp"], errors="coerce")
+    df_calc["open_interest_fp"] = pd.to_numeric(df_calc["open_interest_fp"], errors="coerce")
+
+    base_dist = df_calc["close"] - df_calc["floor_strike"]
+    for side in ("yes", "no"):
+        df_calc[f"{side}_dist"] = base_dist
+        df_calc[f"{side}_dist_pct"] = df_calc[f"{side}_dist"] / df_calc["floor_strike"] * 100
+        d = df_calc[f"{side}_dist"]
+        df_calc[f"m1_{side}_dist_momentum"] = d - d.shift(1)
+        df_calc[f"m3_{side}_dist_momentum"] = d - d.shift(3)
+        df_calc[f"m5_{side}_dist_momentum"] = d - d.shift(5)
+        df_calc[f"{side}_spread"] = (
+            df_calc[f"{side}_ask_close_dollar"] - df_calc[f"{side}_bid_close_dollar"]
+        )
+
+    df_calc["log_return"] = np.log(df_calc["close"] / df_calc["close"].shift(1))
+    df_calc["m3_log_return"] = df_calc["log_return"].rolling(3).std()
+    df_calc["m5_log_return"] = df_calc["log_return"].rolling(5).std()
+    df_calc["3m_log_return"] = df_calc["m3_log_return"]
+    df_calc["5m_log_return"] = df_calc["m5_log_return"]
+    df_calc["ma3"] = df_calc["close"].rolling(3).mean()
+    df_calc["ma5"] = df_calc["close"].rolling(5).mean()
+    df_calc["ma3_vs_strike"] = (df_calc["ma3"] - df_calc["floor_strike"]) / df_calc["floor_strike"] * 100
+    df_calc["ma5_vs_strike"] = (df_calc["ma5"] - df_calc["floor_strike"]) / df_calc["floor_strike"] * 100
+    df_calc["time_decay"] = np.where(df_calc.index.minute % 15 == 0, 0, 15 - df_calc.index.minute % 15)
+    df_calc["hour"] = df_calc.index.hour
+    df_calc["minute"] = df_calc.index.minute
+    vol_mean5 = df_calc["volume_fp"].rolling(5).mean()
+    df_calc["volume_surge"] = df_calc["volume_fp"] / vol_mean5.replace(0, np.nan)
+    df_calc["oi_change"] = df_calc["open_interest_fp"] - df_calc["open_interest_fp"].shift(1)
+    df_calc["1m_yes_dist_momentum"] = df_calc["m1_yes_dist_momentum"]
+    df_calc["3m_yes_dist_momentum"] = df_calc["m3_yes_dist_momentum"]
+    df_calc["5m_yes_dist_momentum"] = df_calc["m5_yes_dist_momentum"]
+    df_merged = df_calc.dropna()
     return df_merged
 
 def backtest_bayesian_strategy_get_market_data(backtest_time: datetime):
@@ -208,61 +282,84 @@ if __name__ == "__main__":
     crypto_at = datetime.now(tz=ZoneInfo('America/Chicago'))
     tickers = get_tickers_by_series("KXBTC15M")
     # crypto_at = datetime.now(tz=ZoneInfo('America/Chicago'))
+    # tickers = ["KXBTC15M-26MAY160515-15"]
     df_merged = backtest_bayesian_strategy_dataframe(crypto_at, tickers[0])
-    # tickers = ["KXBTC15M-26APR091900-00"]
 
     best = None
     entry_distance = 300
-    entry_price = 0.15
-    exit_price = 0.5
+    entry_price = 0.10
+    exit_price = 0.7
     entry_time = 3
     stop_time = 1
     expected_distance = 300
 
-    strategy = CRYPTO_STRATEGY_MANAGER()
-    backtester = CRYPTO_STRATEGY_BACKTESTER(strategy)
-    backtester.set_trade_lot(1)
-    backtester.add_parameters_data(df_merged)
-    backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_TIME(entry_time=entry_time))
-    backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_PRICE(entry_price=entry_price))
-    backtester.add_strategy(CRYPTO_STRATEGY_EXIT_PRICE(exit_price=exit_price))
-    backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_DISTANCE(entry_distance=entry_distance))
-    backtester.add_strategy(CRYPTO_STRATEGY_STOP_TIME(stop_time=stop_time))
-    backtester.add_strategy(CRYPTO_DISTANCE_EXPECTED_DISTANCE(expected_distance=expected_distance))
-    backtester.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=0.31))
-    backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(trade_side="yes"))
-    backtester.strategy.set_minimum_entry_price(entry_price)
-    backtester.strategy.set_maximum_exit_price(exit_price)
-    # backtester.get_market_data(ticker)
-    # result = backtester.run()
-    # print(f"Ticker: {ticker} Result: {[key + ': ' + str(value) for key, value in result.items()]}\n")
-    cum_pnl = 0.0
-    count_win_yes, count_loss_yes, count_win_no, count_loss_no = 0, 0, 0, 0
-    hours = {}
-    for ticker in tickers:
-        if '26MAY05' not in ticker and '26MAY06' not in ticker:
-            continue
-        backtester.get_market_data(ticker)
-        with open("data.txt", "a") as f:
-            result = backtester.run()
-            if result['trade_side'] == 'yes':
-                if result['pnl'] > 0:
-                    count_win_yes += 1
+    for entry_time in range(3, 10):
+        for stop_time in range(1, 3):
+            strategy = CRYPTO_STRATEGY_MANAGER()
+            backtester = CRYPTO_STRATEGY_BACKTESTER(strategy)
+            backtester.set_trade_lot(1)
+            backtester.add_parameters_data(df_merged)
+            backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_TIME(entry_time=entry_time))
+            backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_PRICE(entry_price=entry_price))
+            backtester.add_strategy(CRYPTO_STRATEGY_EXIT_PRICE(exit_price=exit_price))
+            backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_DISTANCE(entry_distance=entry_distance))
+            backtester.add_strategy(CRYPTO_STRATEGY_STOP_TIME(stop_time=stop_time))
+            backtester.add_strategy(CRYPTO_DISTANCE_EXPECTED_DISTANCE(expected_distance=expected_distance))
+            backtester.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=0.15))
+            backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(trade_side="yes"))
+            backtester.strategy.set_minimum_entry_price(entry_price)
+            backtester.strategy.set_maximum_exit_price(exit_price)
+            # backtester.get_market_data(ticker)
+            # result = backtester.run()
+            # print(f"Ticker: {ticker} Result: {[key + ': ' + str(value) for key, value in result.items()]}\n")
+            cum_pnl = 0.0
+            count_win_yes, count_loss_yes, count_win_no, count_loss_no = 0, 0, 0, 0
+            hours = {}
+            for ticker in tickers:
+                if '26MAY17' not in ticker and '26MAY16' not in ticker:
+                    continue
+                backtester.get_market_data(ticker)
+                result = backtester.run()
+                pnl = float(result["pnl"])
+                cum_pnl += pnl
+                if result['trade_side'] == 'yes':
+                    if pnl > 0:
+                        count_win_yes += 1
+                    else:
+                        count_loss_yes += 1
                 else:
-                    count_loss_yes += 1
-            else:
-                if result['pnl'] > 0:
-                    count_win_no += 1
-                else:
-                    count_loss_no += 1
-            if result['pnl'] != 0:
-                hour = result['trade_entry_time'].hour
-                if hour not in hours.keys():
-                    hours[hour] = 0
-                hours[hour] += round(float(result['pnl']), 2)
-                f.write(f"Ticker: {ticker} Result: {[key + ': ' + str(value) for key, value in result.items()]}\n")
-    print(f"Cumulative PNL: {cum_pnl}")
-    print(f"Yes winning Rate: {count_win_yes / (count_win_yes + count_loss_yes) * 100:.1f}%")
-    print(f"No winning Rate: {count_win_no / (count_win_no + count_loss_no) * 100:.1f}%")
-    print(f"Hours: {hours}")
+                    if pnl > 0:
+                        count_win_no += 1
+                    else:
+                        count_loss_no += 1
+                if pnl != 0:
+                    t = result["trade_entry_time"]
+                    hour_key = int(t.hour)
+                    hours[hour_key] = round(hours.get(hour_key, 0) + pnl, 2)
+                    log(
+                        "Ticker:",
+                        ticker,
+                        "Result:",
+                        _backtest_result_log_line(result),
+                        category="BACKTEST",
+                        path=_BACKTESTER_LOG,
+                    )
+            denom_yes = count_win_yes + count_loss_yes
+            denom_no = count_win_no + count_loss_no
+            log("Entry time:", entry_time, "Stop time:", stop_time, category="BACKTEST", path=_BACKTESTER_LOG)
+            log("Cumulative PNL:", f"{cum_pnl:.2f}", category="BACKTEST", path=_BACKTESTER_LOG)
+            log(
+                "Yes winning rate:",
+                f"{count_win_yes / denom_yes * 100 if denom_yes else 0:.1f}%",
+                category="BACKTEST",
+                path=_BACKTESTER_LOG,
+            )
+            log(
+                "No winning rate:",
+                f"{count_win_no / denom_no * 100 if denom_no else 0:.1f}%",
+                category="BACKTEST",
+                path=_BACKTESTER_LOG,
+            )
+            hours_fmt = ", ".join(f"{h:02d}h={pnl:.2f}" for h, pnl in sorted(hours.items()))
+            log("Hours PNL by entry hour (0-23 local):", hours_fmt, category="BACKTEST", path=_BACKTESTER_LOG)
     

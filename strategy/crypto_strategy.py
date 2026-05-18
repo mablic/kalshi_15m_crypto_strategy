@@ -30,6 +30,7 @@ class MarketContext:
     trade_exit_time: int | None = None
     price_to_floor: float | None = None
     parameters: dict | None = None
+    production: bool = False
 
 class CRYPTO_STRATEGY_BASE(ABC):
 
@@ -155,7 +156,8 @@ class CRYPTO_STRATEGY_BAYESIAN_ENTRY(CRYPTO_STRATEGY_BASE):
         probability = self.bayesian_strategy.generate_probability(input_values=input_values)
         bayesian_ok = probability > self.threshold
         bayesian_signal = "buy" if bayesian_ok else "no"
-        log_bayesian(bayesian_signal, probability, self.threshold)
+        if ctx.production:
+            log_bayesian(bayesian_signal, probability, self.threshold)
         return bayesian_signal
 
 class CRYPTO_STRATEGY_MANAGER:
@@ -244,7 +246,8 @@ class CRYPTO_STRATEGY_MANAGER:
                 results[name] = signals
             entry_gate = "buy" if all(x.lower() == "buy" for x in results.values()) else "no"
             breakdown = " ".join(f"{k}={v}" for k, v in results.items())
-            log_entry(entry_gate, breakdown)
+            if ctx.production:
+                log_entry(entry_gate, breakdown)
             if entry_gate == "buy":
                 self.in_trade = True
                 self.trade_entry_time = ctx.trade_entry_time
@@ -252,7 +255,8 @@ class CRYPTO_STRATEGY_MANAGER:
                 self.trade_entry_price = max(self.minimum_entry_price, ctx.entry_price)
                 self.trade_lot = ctx.trade_lot
                 self.trade_decision_type = 'buy'
-                log_trade_enter(ctx.trade_side, self.trade_entry_price, results)
+                if ctx.production:
+                    log_trade_enter(ctx.trade_side, self.trade_entry_price, results)
         elif not self.production or (self.buy_filled and self.production):
             self.trade_direction = 'sell'
             for name, strategy in self._sell_strategies.items():
@@ -267,12 +271,14 @@ class CRYPTO_STRATEGY_MANAGER:
             else:
                 exit_gate = "hold"
             exit_breakdown = " ".join(f"{k}={v}" for k, v in results.items())
-            log_exit(exit_gate, exit_breakdown)
+            if ctx.production:
+                log_exit(exit_gate, exit_breakdown)
             if sell_hit:
                 self.trade_exit_price = min(self.maximum_exit_price, ctx.exit_price)
                 self.trade_exit_time = ctx.trade_exit_time
                 self.trade_decision_type = 'sell'
-                log_trade_exit("sell", self.trade_side, self.trade_exit_price)
+                if ctx.production:
+                    log_trade_exit("sell", self.trade_side, self.trade_exit_price)
             elif stop_hit:
                 self.trade_exit_time = ctx.trade_exit_time
                 self.trade_decision_type = 'stop'
@@ -280,8 +286,9 @@ class CRYPTO_STRATEGY_MANAGER:
                     self.trade_exit_price = ctx.current_yes_bid_price
                 else:
                     self.trade_exit_price = ctx.current_no_bid_price
-                log_trade_exit("stop", self.trade_side, self.trade_exit_price)
-            if not self.production:
+                if ctx.production:
+                    log_trade_exit("stop", self.trade_side, self.trade_exit_price)
+            if not self.production and (sell_hit or stop_hit):
                 self.trade_completed = True
             else:
                 if self.production and self.buy_filled and self.sell_filled:
@@ -289,7 +296,8 @@ class CRYPTO_STRATEGY_MANAGER:
         else:
             exit_gate = "hold"
             exit_breakdown = " ".join(f"{k}={v}" for k, v in results.items())
-            log_exit(exit_gate, exit_breakdown)
+            if ctx.production:
+                log_exit(exit_gate, exit_breakdown)
             
     def get_trade_decision(self):
         return self.trade_decision_type
