@@ -124,22 +124,17 @@ class TICKER_ORDER_BOOK:
         else:
             # with sell orders open, if not open buy order
             if not open_buy_orders:
-                filled_qty = 0
-                for filled_sell_order in filled_sell_orders:
-                    filled_qty += float(filled_sell_order.quantity)
                 # open sell order
-                order_book_qty = float(open_sell_orders[0].quantity) - float(open_sell_orders[0].remaining_quantity)
+                order_book_qty = float(open_sell_orders[0].quantity)
                 if self.open_sell_orders:
                     self.open_sell_orders.remaining_quantity = float(open_sell_orders[0].remaining_quantity)
-                if order_book_qty != filled_qty:
-                    log_generated(f"Order book quantity {order_book_qty} is not equal to filled quantity {filled_qty}")
-                    # only process if miss match to preventing over sell
-                    to_be_trade_order = copy.copy(open_sell_orders[0])
-                    to_be_trade_order.remaining_quantity = order_book_qty
-                    to_be_trade_order.quantity = order_book_qty
-                    to_be_trade_order.entry_price = to_be_trade_order.expected_exit_price
-                    to_be_trade_order.action = 'sell'
-                    self.add_to_sell_orders(to_be_trade_order)
+                # only process if miss match to preventing over sell
+                to_be_trade_order = copy.copy(open_sell_orders[0])
+                to_be_trade_order.remaining_quantity = order_book_qty
+                to_be_trade_order.quantity = order_book_qty
+                to_be_trade_order.entry_price = to_be_trade_order.expected_exit_price
+                to_be_trade_order.action = 'sell'
+                self.add_to_sell_orders(to_be_trade_order)
             else:
                 filled_buy_qty = 0
                 filled_sell_qty = 0

@@ -77,7 +77,7 @@ def read_kalshi_collection():
 
 
 def _tickers_by_series_cache_path(series_ticker: str) -> Path:
-    """CSV DataFrame cache next to this module: one column ``ticker``."""
+    """CSV cache next to this module: one column ``ticker``."""
     safe = series_ticker.strip().upper().replace("/", "_")
     return _LIB_DIR / f"tickers_by_series_{safe}.csv"
 

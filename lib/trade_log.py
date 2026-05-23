@@ -1,30 +1,3 @@
-"""Append-only log for live trading (quotes, model output, strategy events).
-
-Primary API (use from any module under the project root)::
-
-    from lib.trade_log import (
-        log, info, error, log_sep, log_market, dec2,
-        log_bayesian, log_entry, log_exit, log_trade_enter, log_trade_exit,
-        generate_log_line, log_generated,
-    )
-
-    log("ticker=", ticker, "px=", dec2(px))           # default: now + INFO
-    log("placed", qty, category="PLACE", ts=clock)    # custom category / timestamp
-    error("API failed:", exc)                         # same as category=ERROR
-    log_sep()
-    log_market(clock_min, ticker, decay, y_ask, y_bid, n_ask, n_bid, dist)
-    log_bayesian(signal, prob, th)                 # same layout as format_log_bayesian
-    log_entry(gate, breakdown)
-    log_exit(gate, breakdown)
-    log_trade_enter(side, entry_px, results_dict)
-    log_trade_exit(reason, side, exit_px)
-
-    line = generate_log_line("custom note", value)   # str: ts + message only
-    log_generated("wrote", path)                      # append that shape to file
-
-Lower-level ``format_log_*`` + ``append_trade_log`` remain available for custom lines.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime

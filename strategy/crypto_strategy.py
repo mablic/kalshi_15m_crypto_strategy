@@ -75,6 +75,17 @@ class CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(CRYPTO_STRATEGY_BASE):
         return "no"
 
 
+class CRYPTO_STRATEGY_ENTRY_STOP_BUY_TIME(CRYPTO_STRATEGY_BASE):
+    def __init__(self, entry_stop_buy_time: int = 0):
+        super().__init__(name="ENTRY_STOP_BUY_TIME_CYCLE", type="buy")
+        self.stop_time = entry_stop_buy_time
+
+    def generate_signals(self, ctx: MarketContext) -> bool:
+        if ctx.stop_time >= self.stop_time:
+            return "buy"
+        return "stop"
+
+
 class CRYPTO_STRATEGY_STOP_TIME(CRYPTO_STRATEGY_BASE):
     def __init__(self, stop_time: int = 0):
         super().__init__(name="STOP_TIME_CYCLE", type="sell")
@@ -244,11 +255,14 @@ class CRYPTO_STRATEGY_MANAGER:
             for name, strategy in self._buy_strategies.items():
                 signals = strategy.generate_signals(ctx)
                 results[name] = signals
+            stop_hit = self.is_stop_exit(results.values())
             entry_gate = "buy" if all(x.lower() == "buy" for x in results.values()) else "no"
             breakdown = " ".join(f"{k}={v}" for k, v in results.items())
             if ctx.production:
                 log_entry(entry_gate, breakdown)
-            if entry_gate == "buy":
+            if stop_hit and self.production:
+                entry_gate = "stop buy"
+            elif entry_gate == "buy":
                 self.in_trade = True
                 self.trade_entry_time = ctx.trade_entry_time
                 self.trade_side = ctx.trade_side
@@ -295,6 +309,14 @@ class CRYPTO_STRATEGY_MANAGER:
                     self.trade_completed = True
         else:
             exit_gate = "hold"
+            if not self.buy_filled and self.production:
+                for name, strategy in self._buy_strategies.items():
+                    signals = strategy.generate_signals(ctx)
+                    results[name] = signals
+                stop_hit = self.is_stop_exit(results.values())
+                if stop_hit:
+                    if stop_hit and self.production:
+                        exit_gate = "stop buy"
             exit_breakdown = " ".join(f"{k}={v}" for k, v in results.items())
             if ctx.production:
                 log_exit(exit_gate, exit_breakdown)

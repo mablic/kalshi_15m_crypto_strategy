@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from strategy import *
 from lib import *
@@ -20,6 +20,8 @@ _BT_MARKET_DF_CACHE: dict[str, pd.DataFrame] = {}
 def clear_backtester_market_cache() -> None:
     """Drop cached DataFrames from get_market_data (e.g. between full study runs)."""
     _BT_MARKET_DF_CACHE.clear()
+
+
 def _backtest_result_log_line(result: dict) -> str:
     """Format trade result for BACKTEST log; pnl and dollar fields to 2 decimals."""
     parts = []
@@ -205,8 +207,12 @@ class CRYPTO_STRATEGY_BACKTESTER:
         return self.strategy.get_trade_result()
 
 
-def backtest_bayesian_strategy_dataframe(backtest_time: datetime, ticker: str):
-    lookback_minutes = 8000
+def backtest_bayesian_strategy_dataframe(
+    backtest_time: datetime,
+    ticker: str,
+    *,
+    lookback_minutes: int = 8000,
+) -> pd.DataFrame:
     series, event_dt = parse_kalshi_15m_event_ticker(ticker)
     crypto_at = backtest_time
     df_api = get_market_data_from_api(series, crypto_at, lookback_minutes)
@@ -272,9 +278,15 @@ def backtest_bayesian_strategy_dataframe(backtest_time: datetime, ticker: str):
     df_merged = df_calc.dropna()
     return df_merged
 
-def backtest_bayesian_strategy_get_market_data(backtest_time: datetime):
-    df = backtest_bayesian_strategy_dataframe(backtest_time)
-    return df.to_dict(orient='records')
+
+def backtest_bayesian_strategy_get_market_data(
+    backtest_time: datetime,
+    ticker: str,
+    *,
+    lookback_minutes: int = 8000,
+):
+    df = backtest_bayesian_strategy_dataframe(backtest_time, ticker, lookback_minutes=lookback_minutes)
+    return df.to_dict(orient="records")
 
 if __name__ == "__main__":
     ticker = "KXBTC15M-26MAY040415-15"
@@ -287,10 +299,10 @@ if __name__ == "__main__":
 
     best = None
     entry_distance = 300
-    entry_price = 0.10
-    exit_price = 0.7
+    entry_price = 0.05
+    exit_price = 0.9
     entry_time = 3
-    stop_time = 1
+    stop_time = 2
     expected_distance = 300
 
     for entry_time in range(3, 10):

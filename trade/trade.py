@@ -18,16 +18,16 @@ from generate_ticker import GENERATE_TICKER
 from order_book import ORDER_BOOK_MANAGER, TICKER_ORDER_BOOK, ORDER
 from lib.trade_log import dec2, error, info, log, log_market, log_sep
 
-ENTRY_TIME = 4
-ENTRY_PRICE = 0.1
-EXIT_PRICE = 0.7
+ENTRY_TIME = 3
+ENTRY_PRICE = 0.10
+EXIT_PRICE = 0.9
 ENTRY_DISTANCE = 300
-STOP_TIME = 0
-THRESHOLD = 0.15
+STOP_TIME = 1
+THRESHOLD = 0.1
 TRADE_SIDE = "yes"
 TRADE_LOT = 1
 WAIT_TIME = 30
-ENTRY_HOURS = [6,7,8,9,10]
+ENTRY_HOURS = [x for x in range(23)]
 
 class TRADE:
     def __init__(self, series_list: list[str], client: KalshiHttpClient):
@@ -43,6 +43,22 @@ class TRADE:
         generate_ticker = GENERATE_TICKER(series_list=self.series_list)
         return generate_ticker.get_ticker_list()
 
+    def _add_macd_calc(self, df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9):
+        fast_ema = df['close'].ewm(span=fast, adjust=False).mean()
+        slow_ema = df['close'].ewm(span=slow, adjust=False).mean()
+        macd_line = fast_ema - slow_ema
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram
+
+    def _add_rsi_calc(self, df: pd.DataFrame, periods: int = 14):
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(periods).mean()
+        loss = (delta.where(delta < 0, 0)).rolling(periods).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+
     def _add_features_to_df(self, exchange_df: pd.DataFrame, api_df: pd.DataFrame):
         if exchange_df.empty or api_df.empty:
             return None
@@ -52,8 +68,8 @@ class TRADE:
         exchange_df["datetime"] = exchange_df["datetime"].dt.tz_convert("America/Chicago")
         exchange_df["datetime"] = exchange_df["datetime"].dt.floor("min")
         exchange_df = exchange_df.set_index("datetime")
-        filter_timestamp = exchange_df[exchange_df.index.minute.isin([0, 15, 30, 45])].index[0]
-        exchange_df = exchange_df[exchange_df.index >= filter_timestamp]
+        # filter_timestamp = exchange_df[exchange_df.index.minute.isin([0, 15, 30, 45])].index[0]
+        # exchange_df = exchange_df[exchange_df.index >= filter_timestamp]
 
         api_df = api_df.copy()
         api_df["datetime"] = pd.to_datetime(api_df["datetime"])
@@ -116,6 +132,8 @@ class TRADE:
         df_calc["1m_yes_dist_momentum"] = df_calc["m1_yes_dist_momentum"]
         df_calc["3m_yes_dist_momentum"] = df_calc["m3_yes_dist_momentum"]
         df_calc["5m_yes_dist_momentum"] = df_calc["m5_yes_dist_momentum"]
+        df_calc["rsi"] = self._add_rsi_calc(df_calc, periods=5)
+        df_calc["macd"], df_calc["signal_line"], _ = self._add_macd_calc(df_calc, fast=4, slow=9, signal=2)
         df_merged = df_calc.dropna()
         return df_merged
 
@@ -128,6 +146,7 @@ class TRADE:
         self.strategy.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=THRESHOLD))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(trade_side=TRADE_SIDE))
         self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_HOURS(entry_hours=ENTRY_HOURS))
+        self.strategy.add_strategy(CRYPTO_STRATEGY_ENTRY_STOP_BUY_TIME(entry_stop_buy_time=STOP_TIME))
         self.strategy.set_minimum_entry_price(ENTRY_PRICE)
         self.strategy.set_maximum_exit_price(EXIT_PRICE)
         self.strategy.set_to_production()
@@ -341,6 +360,9 @@ class TRADE:
                 'oi_change': row['oi_change'],
                 'minute': row['minute'],
                 'hour': row['hour'],
+                'rsi': row['rsi'],
+                'macd': row['macd'],
+                'signal_line': row['signal_line'],
             }
 
             # yes_ask_price, no_ask_price, yes_bid_price, no_bid_price = self.get_price_from_order_book(row)
@@ -426,7 +448,11 @@ class TRADE:
                     continue
                 # trade_decision = 'buy'
                 order_book = self.get_order_book_by_ticker(ticker)
-                if trade_decision == 'buy' and not open_order and not self.order_book_managers.get_order_book_manager(ticker).is_in_trade():
+                if trade_decision == 'stop buy':
+                    for order in open_order:
+                        self.client.cancel_open_order(order_id=order.order_id)
+                        log("CANCEL_BUY_ORDER", order.ticker, order.side, "n=", order.remaining_quantity, "yes$=", dec2(order.entry_price), category="TRADE")
+                elif trade_decision == 'buy' and not open_order and not self.order_book_managers.get_order_book_manager(ticker).is_in_trade():
                     buy_order = ORDER(
                         order_id=None,
                         ticker=ticker,
