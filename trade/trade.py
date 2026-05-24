@@ -20,14 +20,14 @@ from lib.trade_log import dec2, error, info, log, log_market, log_sep
 
 ENTRY_TIME = 3
 ENTRY_PRICE = 0.10
-EXIT_PRICE = 0.9
+EXIT_PRICE = 0.99
 ENTRY_DISTANCE = 300
 STOP_TIME = 1
-THRESHOLD = 0.1
+THRESHOLD = 0.15
 TRADE_SIDE = "yes"
 TRADE_LOT = 1
 WAIT_TIME = 30
-ENTRY_HOURS = [x for x in range(23)]
+ENTRY_HOURS = [9, 10, 11, 12, 16, 20]
 
 class TRADE:
     def __init__(self, series_list: list[str], client: KalshiHttpClient):
