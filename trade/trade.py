@@ -20,12 +20,12 @@ from lib.trade_log import dec2, error, info, log, log_market, log_sep
 
 ENTRY_TIME = 3
 ENTRY_PRICE = 0.10
-EXIT_PRICE = 0.99
+EXIT_PRICE = 0.90
 ENTRY_DISTANCE = 300
 STOP_TIME = 1
-THRESHOLD = 0.15
+THRESHOLD = 0.30
 TRADE_SIDE = "yes"
-TRADE_LOT = 1
+TRADE_LOT = 5
 WAIT_TIME = 30
 ENTRY_HOURS = [9, 10, 11, 12, 16, 20]
 
@@ -421,87 +421,92 @@ class TRADE:
         self.initialize_dataframes()
         while True:
             self.read_new_data()
-            for series_ticker in self.ticker_data.keys():
-                last_df = self.ticker_data[series_ticker].tail(1)
-                row = last_df.iloc[0]  
-                ticker = row['ticker'] 
-                open_order = self.get_open_order_by_ticker(ticker)
-                open_filled_orders = self.get_filled_orders_from_api(ticker)
-                if open_filled_orders:
-                    for order in open_filled_orders:
-                        if order.action == 'buy':
-                            self.strategy.set_buy_filled()
-                            break
-                        elif order.action == 'sell':
-                            self.strategy.set_sell_filled()
-                            break
-                # if nothing is open, create or filled
-                if not self.order_book_managers.check_ticker_in_order_book_manager(ticker):
-                    log_sep()
-                    log("ADD_ORDER_BOOK_MANAGER", ticker, category="TRADE")
-                    self.strategy.reset_trade()
-                    self.order_book_managers.clean_order_book_manager()
-                    self.order_book_managers.add_order_book_manager(TICKER_ORDER_BOOK(ticker))
+            try:
+                for series_ticker in self.ticker_data.keys():
+                    last_df = self.ticker_data[series_ticker].tail(1)
+                    row = last_df.iloc[0]  
+                    ticker = row['ticker'] 
+                    open_order = self.get_open_order_by_ticker(ticker)
+                    open_filled_orders = self.get_filled_orders_from_api(ticker)
+                    if open_filled_orders:
+                        for order in open_filled_orders:
+                            if order.action == 'buy':
+                                self.strategy.set_buy_filled()
+                                break
+                            elif order.action == 'sell':
+                                self.strategy.set_sell_filled()
+                                break
+                    # if nothing is open, create or filled
+                    if not self.order_book_managers.check_ticker_in_order_book_manager(ticker):
+                        log_sep()
+                        log("ADD_ORDER_BOOK_MANAGER", ticker, category="TRADE")
+                        self.strategy.reset_trade()
+                        self.order_book_managers.clean_order_book_manager()
+                        self.order_book_managers.add_order_book_manager(TICKER_ORDER_BOOK(ticker))
 
-                trade_decision = self.get_trade_decision_by_ticker(ticker, row)
-                if trade_decision == 'completed':
-                    continue
-                # trade_decision = 'buy'
-                order_book = self.get_order_book_by_ticker(ticker)
-                if trade_decision == 'stop buy':
-                    for order in open_order:
-                        self.client.cancel_open_order(order_id=order.order_id)
-                        log("CANCEL_BUY_ORDER", order.ticker, order.side, "n=", order.remaining_quantity, "yes$=", dec2(order.entry_price), category="TRADE")
-                elif trade_decision == 'buy' and not open_order and not self.order_book_managers.get_order_book_manager(ticker).is_in_trade():
-                    buy_order = ORDER(
-                        order_id=None,
-                        ticker=ticker,
-                        symbol=ticker,
-                        order_date=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
-                        order_type=series_ticker,
-                        order_execution_type='resting',
-                        action='buy',
-                        side='yes',
-                        quantity=self.trade_lot,
-                        remaining_quantity=self.trade_lot,
-                        entry_price=min(order_book['yes_ask_low_dollar'], ENTRY_PRICE) ,
-                        expected_exit_price=EXIT_PRICE,
-                        price=ENTRY_PRICE,
-                        created_at=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
-                        last_updated_at=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
-                        trade_type='buy',
-                        fill_id=None,
-                    )
-                    self.order_book_managers.get_order_book_manager(ticker).add_to_buy_orders(buy_order)
-                else:
-                    self.order_book_managers.get_order_book_manager(ticker).order_decision(open_order, open_filled_orders)
-                to_be_trade_list = self.order_book_managers.get_order_book_manager(ticker).get_to_be_trade_list()
-                for to_be_trade_order in to_be_trade_list:
-                    if to_be_trade_order.action == 'buy':
-                        log("PLACE_BUY", to_be_trade_order.ticker, to_be_trade_order.side, "n=", to_be_trade_order.remaining_quantity, "yes$=", dec2(to_be_trade_order.entry_price), category="TRADE")
-                        self.client.create_open_order(
-                            ticker=to_be_trade_order.ticker,
-                            side=to_be_trade_order.side,
-                            action=to_be_trade_order.action,
-                            count=to_be_trade_order.remaining_quantity,
-                            yes_price_dollars=to_be_trade_order.entry_price,
+                    trade_decision = self.get_trade_decision_by_ticker(ticker, row)
+                    if trade_decision == 'completed':
+                        continue
+                    # trade_decision = 'buy'
+                    order_book = self.get_order_book_by_ticker(ticker)
+                    if trade_decision == 'stop buy':
+                        for order in open_order:
+                            self.client.cancel_open_order(order_id=order.order_id)
+                            log("CANCEL_BUY_ORDER", order.ticker, order.side, "n=", order.remaining_quantity, "yes$=", dec2(order.entry_price), category="TRADE")
+                    elif trade_decision == 'buy' and not open_order and not self.order_book_managers.get_order_book_manager(ticker).is_in_trade():
+                        buy_order = ORDER(
+                            order_id=None,
+                            ticker=ticker,
+                            symbol=ticker,
+                            order_date=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
+                            order_type=series_ticker,
+                            order_execution_type='resting',
+                            action='buy',
+                            side='yes',
+                            quantity=self.trade_lot,
+                            remaining_quantity=self.trade_lot,
+                            entry_price=min(order_book['yes_ask_low_dollar'], ENTRY_PRICE) ,
+                            expected_exit_price=EXIT_PRICE,
+                            price=ENTRY_PRICE,
+                            created_at=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
+                            last_updated_at=datetime.now(tz=ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S'),
+                            trade_type='buy',
+                            fill_id=None,
                         )
+                        self.order_book_managers.get_order_book_manager(ticker).add_to_buy_orders(buy_order)
                     else:
-                        if trade_decision == 'stop':
-                            ypx = max(order_book['yes_bid_high_dollar'], 0.01)
+                        self.order_book_managers.get_order_book_manager(ticker).order_decision(open_order, open_filled_orders)
+                    to_be_trade_list = self.order_book_managers.get_order_book_manager(ticker).get_to_be_trade_list()
+                    for to_be_trade_order in to_be_trade_list:
+                        if to_be_trade_order.action == 'buy':
+                            log("PLACE_BUY", to_be_trade_order.ticker, to_be_trade_order.side, "n=", to_be_trade_order.remaining_quantity, "yes$=", dec2(to_be_trade_order.entry_price), category="TRADE")
+                            self.client.create_open_order(
+                                ticker=to_be_trade_order.ticker,
+                                side=to_be_trade_order.side,
+                                action=to_be_trade_order.action,
+                                count=to_be_trade_order.remaining_quantity,
+                                yes_price_dollars=to_be_trade_order.entry_price,
+                            )
                         else:
-                            ypx = max(order_book['yes_bid_high_dollar'], to_be_trade_order.entry_price, 0.01) 
-                        log("PLACE_SELL", to_be_trade_order.ticker, to_be_trade_order.side, "n=", to_be_trade_order.remaining_quantity, "yes$=", dec2(ypx), "cancel_id=", to_be_trade_order.order_id, category="TRADE")
-                        if to_be_trade_order.order_id is not None:
-                            self.client.cancel_open_order(order_id=to_be_trade_order.order_id)
-                        self.client.create_open_order(
-                            ticker=to_be_trade_order.ticker,
-                            side=to_be_trade_order.side,
-                            action=to_be_trade_order.action,
-                            count=to_be_trade_order.remaining_quantity,
-                            yes_price_dollars=ypx,
-                        )
+                            if trade_decision == 'stop':
+                                ypx = max(order_book['yes_bid_high_dollar'], 0.01)
+                            else:
+                                ypx = max(order_book['yes_bid_high_dollar'], to_be_trade_order.entry_price, 0.01) 
+                            log("PLACE_SELL", to_be_trade_order.ticker, to_be_trade_order.side, "n=", to_be_trade_order.remaining_quantity, "yes$=", dec2(ypx), "cancel_id=", to_be_trade_order.order_id, category="TRADE")
+                            if to_be_trade_order.order_id is not None:
+                                self.client.cancel_open_order(order_id=to_be_trade_order.order_id)
+                            self.client.create_open_order(
+                                ticker=to_be_trade_order.ticker,
+                                side=to_be_trade_order.side,
+                                action=to_be_trade_order.action,
+                                count=to_be_trade_order.remaining_quantity,
+                                yes_price_dollars=ypx,
+                            )
                     self.order_book_managers.get_order_book_manager(ticker).clear_to_be_trade_list()
+            except Exception as e:
+                error("Error running trade on the main run", e)
+            finally:
+                pass
             time.sleep(WAIT_TIME)
 
 if __name__ == "__main__":

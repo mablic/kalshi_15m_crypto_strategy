@@ -139,6 +139,23 @@ class CRYPTO_STRATEGY_ENTRY_PRICE(CRYPTO_STRATEGY_BASE):
         return "no"
 
 
+class CRYPTO_STRATEGY_EXIT_VOLATILITY(CRYPTO_STRATEGY_BASE):
+    def __init__(self):
+        super().__init__(name="EXIT_VOLATILITY_CYCLE", type="sell")
+
+    def generate_signals(self, ctx: MarketContext) -> bool:
+        entry_time = ctx.entry_time 
+        current_volatility = ctx['parameters']['m1_log_std']
+        current_distance = ctx.distance
+        current_price = ctx['parameters']['close_price'] 
+
+        max_move = current_price * current_volatility * np.sqrt(entry_time)
+
+        if abs(current_distance) > max_move:
+            return "sell" if current_distance > 0 else "buy"
+        return "no"
+
+
 class CRYPTO_STRATEGY_EXIT_PRICE(CRYPTO_STRATEGY_BASE):
     def __init__(self, exit_price: float = 0.0):
         super().__init__(name="EXIT_PRICE_CYCLE", type="sell")
@@ -317,6 +334,7 @@ class CRYPTO_STRATEGY_MANAGER:
                 if stop_hit:
                     if stop_hit and self.production:
                         exit_gate = "stop buy"
+                        self.trade_decision_type = 'stop buy'
             exit_breakdown = " ".join(f"{k}={v}" for k, v in results.items())
             if ctx.production:
                 log_exit(exit_gate, exit_breakdown)

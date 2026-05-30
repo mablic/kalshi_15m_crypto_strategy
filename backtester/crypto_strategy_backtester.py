@@ -152,8 +152,9 @@ class CRYPTO_STRATEGY_BACKTESTER:
                         '5m_yes_dist_momentum': params_df.loc[trade_time, '5m_yes_dist_momentum'],
                         'time_decay': params_df.loc[trade_time, 'time_decay'],
                         'log_return': params_df.loc[trade_time, 'log_return'],
-                        '3m_log_return': params_df.loc[trade_time, '3m_log_return'],
-                        '5m_log_return': params_df.loc[trade_time, '5m_log_return'],
+                        'm1_log_std': params_df.loc[trade_time, 'm1_log_std'],
+                        'm3_log_std': params_df.loc[trade_time, 'm3_log_std'],
+                        'm5_log_std': params_df.loc[trade_time, 'm5_log_std'],
                         'yes_dist': params_df.loc[trade_time, 'yes_dist'],
                         'yes_spread': params_df.loc[trade_time, 'yes_spread'],
                         'no_spread': params_df.loc[trade_time, 'no_spread'],
@@ -161,6 +162,7 @@ class CRYPTO_STRATEGY_BACKTESTER:
                         'oi_change': params_df.loc[trade_time, 'oi_change'],
                         'minute': params_df.loc[trade_time, 'minute'],
                         'hour': params_df.loc[trade_time, 'hour'],
+                        'close_price': params_df.loc[trade_time, 'close'],
                     }
             except Exception:
                 pass
@@ -201,7 +203,8 @@ class CRYPTO_STRATEGY_BACKTESTER:
                 trade_side = self.strategy.get_trade_side()
             self.set_strategy_ctx(MarketContext(entry_time=entry_time, stop_time=entry_time, entry_price=entry_price, 
                 exit_price=exit_price, distance=distance, trade_side=trade_side, trade_lot=self.lot_size, 
-                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, trade_exit_time=trade_time, parameters=parameters, production=self.strategy.production))
+                current_yes_bid_price=yes_bid_price, current_no_bid_price=no_bid_price, trade_entry_time=trade_time, 
+                trade_exit_time=trade_time, parameters=parameters, production=self.strategy.production))
             self.strategy.run_all_strategies(ctx=self.ctx)
         
         return self.strategy.get_trade_result()
@@ -257,11 +260,12 @@ def backtest_bayesian_strategy_dataframe(
             df_calc[f"{side}_ask_close_dollar"] - df_calc[f"{side}_bid_close_dollar"]
         )
 
+    df_calc["ask_delta"] = df_calc["yes_ask_low_dollar"].diff()
+    df_calc["bid_delta"] = df_calc["yes_bid_high_dollar"].diff()
     df_calc["log_return"] = np.log(df_calc["close"] / df_calc["close"].shift(1))
-    df_calc["m3_log_return"] = df_calc["log_return"].rolling(3).std()
-    df_calc["m5_log_return"] = df_calc["log_return"].rolling(5).std()
-    df_calc["3m_log_return"] = df_calc["m3_log_return"]
-    df_calc["5m_log_return"] = df_calc["m5_log_return"]
+    df_calc["m1_log_std"] = df_calc["log_return"].rolling(1).std()
+    df_calc["m3_log_std"] = df_calc["log_return"].rolling(3).std()
+    df_calc["m5_log_std"] = df_calc["log_return"].rolling(5).std()
     df_calc["ma3"] = df_calc["close"].rolling(3).mean()
     df_calc["ma5"] = df_calc["close"].rolling(5).mean()
     df_calc["ma3_vs_strike"] = (df_calc["ma3"] - df_calc["floor_strike"]) / df_calc["floor_strike"] * 100
@@ -289,7 +293,7 @@ def backtest_bayesian_strategy_get_market_data(
     return df.to_dict(orient="records")
 
 if __name__ == "__main__":
-    ticker = "KXBTC15M-26MAY040415-15"
+    ticker = "KXBTC15M-26MAY250415-15"
     # crypto_at = datetime(2026, 5, 4, 3, 30, 0, tzinfo=ZoneInfo('America/Chicago'))
     crypto_at = datetime.now(tz=ZoneInfo('America/Chicago'))
     tickers = get_tickers_by_series("KXBTC15M")
@@ -319,6 +323,7 @@ if __name__ == "__main__":
             backtester.add_strategy(CRYPTO_DISTANCE_EXPECTED_DISTANCE(expected_distance=expected_distance))
             backtester.add_strategy(CRYPTO_STRATEGY_BAYESIAN_ENTRY(threshold=0.15))
             backtester.add_strategy(CRYPTO_STRATEGY_ENTRY_TRADE_SIDE(trade_side="yes"))
+            backtester.add_strategy(CRYPTO_STRATEGY_EXIT_VOLATILITY())
             backtester.strategy.set_minimum_entry_price(entry_price)
             backtester.strategy.set_maximum_exit_price(exit_price)
             # backtester.get_market_data(ticker)
